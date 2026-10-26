@@ -37,7 +37,7 @@ func setup(t *testing.T, queue bool) *fixture {
 	}
 }
 
-func (f *fixture) register(t *testing.T, id string, pid int, state string) {
+func (f *fixture) register(t *testing.T, id string, pid int, state store.AgentState) {
 	t.Helper()
 	err := f.st.Register(store.Agent{
 		ID:       id,
@@ -65,7 +65,7 @@ func (f *fixture) env(t *testing.T, from, to, kind, body string, meta map[string
 	return env
 }
 
-func (f *fixture) state(t *testing.T, mailbox, msgID string) string {
+func (f *fixture) state(t *testing.T, mailbox, msgID string) store.MessageState {
 	t.Helper()
 	msg, err := f.st.Resolve(mailbox, msgID)
 	if err != nil {
@@ -79,9 +79,9 @@ func TestPushDecision(t *testing.T) {
 		name       string
 		queues     bool
 		pid        int
-		state      string
+		state      store.AgentState
 		wantPushed bool
-		wantState  string
+		wantState  store.MessageState
 	}{
 		{"live harness that queues, busy", true, os.Getpid(), store.AgentBusy, true, store.StateQueued},
 		{"live harness that queues, no state", true, os.Getpid(), "", true, store.StateQueued},
@@ -113,7 +113,7 @@ func TestPushDecision(t *testing.T) {
 			if pushed := len(pushes) == 1; pushed != c.wantPushed {
 				t.Errorf("harness saw %d pushes, want pushed=%v", len(pushes), c.wantPushed)
 			}
-			if res.Short == "" {
+			if res.Message.Short == "" {
 				t.Error("no short id returned")
 			}
 		})
@@ -240,7 +240,7 @@ func TestDrainReturnsWhatItCouldNotPush(t *testing.T) {
 	}
 }
 
-func TestDrainOfGoneAgentClaimsNothing(t *testing.T) {
+func TestDrainOfGoneAgentReturnsPendingWithoutPush(t *testing.T) {
 	f := setup(t, true)
 	f.register(t, "worker", deadPID, "")
 	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "hi", nil)); err != nil {

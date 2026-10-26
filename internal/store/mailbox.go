@@ -26,13 +26,25 @@ const (
 	FileMode os.FileMode = 0o600
 )
 
-// Message states. A message is stored until someone claims it for push or
-// drain (queued), and read once its harness reports the turn started.
+// MessageState is where a message is in its delivery path: stored until
+// someone claims it for push or drain (queued), and read once its harness
+// reports the turn started.
+type MessageState string
+
 const (
-	StateStored = "stored"
-	StateQueued = "queued"
-	StateRead   = "read"
+	StateStored MessageState = "stored"
+	StateQueued MessageState = "queued"
+	StateRead   MessageState = "read"
 )
+
+// Valid reports whether s is a state recado records.
+func (s MessageState) Valid() bool {
+	switch s {
+	case StateStored, StateQueued, StateRead:
+		return true
+	}
+	return false
+}
 
 // Errors callers map to exit code 2: the address or id they named does not
 // exist or is not enough to identify one message.
@@ -45,6 +57,9 @@ var (
 // Store is a recado state directory.
 type Store struct {
 	root string
+	// write appends one receipt batch; a test replaces it to make the disk
+	// fail partway through a claim. Nil writes the batch as it is.
+	write func(f *os.File, data []byte) (int, error)
 }
 
 // DefaultRoot is ${RECADO_STATE_DIR}, else
@@ -87,10 +102,12 @@ func ensureDir(path string) error {
 	return os.Chmod(path, DirMode)
 }
 
-// Message is one stored envelope and its current state.
+// Message is one stored envelope, its current state, and the short id it has
+// in its mailbox.
 type Message struct {
 	Envelope envelope.Envelope
-	State    string
+	State    MessageState
+	Short    string // the shortest suffix that names it in this mailbox
 }
 
 // Append stores env in agent id's mailbox, under the mailbox lock. Storing an
@@ -132,15 +149,7 @@ func (s *Store) Messages(id string) ([]Message, error) {
 		return nil, err
 	}
 	defer unlock(f)
-	envs, err := readInbox(f)
-	if err != nil {
-		return nil, err
-	}
-	states, err := s.states(id)
-	if err != nil {
-		return nil, err
-	}
-	return join(envs, states), nil
+	return s.messagesLocked(f, id)
 }
 
 // ShortID is the shortest suffix of msgID, at least four characters, that
@@ -257,8 +266,9 @@ func (s *Store) ClaimPending(id string) ([]Message, error) {
 	return claimed, nil
 }
 
-// Mark records state for msgID if it differs from the message's current one.
-func (s *Store) Mark(id, msgID, state string) error {
+// Release returns a claimed message to stored, for example after a rejected
+// push, so a later drain retries it.
+func (s *Store) Release(id, msgID string) error {
 	f, err := s.lockMailbox(id, syscall.LOCK_EX)
 	if err != nil {
 		return err
@@ -272,15 +282,11 @@ func (s *Store) Mark(id, msgID, state string) error {
 	if err != nil {
 		return err
 	}
-	if msg.State == state {
+	if msg.State == StateStored {
 		return nil
 	}
-	return s.appendReceipt(id, msgID, state)
+	return s.appendReceipt(id, msgID, StateStored)
 }
-
-// Release returns a claimed message to stored, for example after a rejected
-// push, so a later drain retries it.
-func (s *Store) Release(id, msgID string) error { return s.Mark(id, msgID, StateStored) }
 
 // MarkQueuedRead records read for every queued message: the harness reported
 // the turn started.
@@ -303,15 +309,6 @@ func (s *Store) MarkQueuedRead(id string) error {
 		}
 	}
 	return nil
-}
-
-// Render is how agent id sees env in its timeline.
-func (s *Store) Render(id string, env envelope.Envelope) (string, error) {
-	short, err := s.ShortID(id, env.ID)
-	if err != nil {
-		return "", err
-	}
-	return envelope.Render(env, short), nil
 }
 
 func shortID(msgs []Message, msgID string) string {
@@ -359,8 +356,27 @@ func (s *Store) lockMailbox(id string, how int) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "inbox.jsonl")
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, FileMode)
+	return lockFile(filepath.Join(dir, "inbox.jsonl"), os.O_RDWR|os.O_APPEND|os.O_CREATE, how)
+}
+
+// LockDelivery takes id's delivery lock: the one lock that covers reading the
+// recipient's state, claiming its stored messages and pushing them, so a turn
+// boundary cannot interleave with a delivery. The caller must call release.
+func (s *Store) LockDelivery(id string) (release func(), err error) {
+	dir, err := s.mailboxDir(id)
+	if err != nil {
+		return nil, err
+	}
+	f, err := lockFile(filepath.Join(dir, "delivery.lock"), os.O_RDWR|os.O_CREATE, syscall.LOCK_EX)
+	if err != nil {
+		return nil, err
+	}
+	return func() { unlock(f) }, nil
+}
+
+// lockFile opens path at FileMode and takes how's flock on it.
+func lockFile(path string, flag, how int) (*os.File, error) {
+	f, err := os.OpenFile(path, flag, FileMode)
 	if err != nil {
 		return nil, err
 	}
@@ -373,30 +389,6 @@ func (s *Store) lockMailbox(id string, how int) (*os.File, error) {
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	return f, nil
-}
-
-// LockDelivery takes id's delivery lock: the one lock that covers reading the
-// recipient's state, claiming its stored messages and pushing them, so a turn
-// boundary cannot interleave with a delivery. The caller must call release.
-func (s *Store) LockDelivery(id string) (release func(), err error) {
-	dir, err := s.mailboxDir(id)
-	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dir, "delivery.lock")
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, FileMode)
-	if err != nil {
-		return nil, err
-	}
-	if err := f.Chmod(FileMode); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("lock %s: %w", path, err)
-	}
-	return func() { unlock(f) }, nil
 }
 
 // mailboxDir creates id's mailbox directory and returns it.
@@ -449,11 +441,12 @@ func readInbox(f *os.File) ([]envelope.Envelope, error) {
 }
 
 // states reads the receipts of id's mailbox: the last state recorded per
-// message wins.
-func (s *Store) states(id string) (map[string]string, error) {
+// message wins. Reading is lenient: a state recado does not know is reported
+// as recorded, so one bad receipt cannot make a mailbox unreadable.
+func (s *Store) states(id string) (map[string]MessageState, error) {
 	data, err := os.ReadFile(s.receiptsPath(id))
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]string{}, nil
+		return map[string]MessageState{}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -462,7 +455,7 @@ func (s *Store) states(id string) (map[string]string, error) {
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		data = data[:bytes.LastIndexByte(data, '\n')+1]
 	}
-	states := map[string]string{}
+	states := map[string]MessageState{}
 	for n, line := range bytes.Split(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -478,17 +471,13 @@ func (s *Store) states(id string) (map[string]string, error) {
 
 // receipt is one state change in receipts.jsonl.
 type receipt struct {
-	ID    string `json:"id"`
-	State string `json:"state"`
-	TS    string `json:"ts"`
+	ID    string       `json:"id"`
+	State MessageState `json:"state"`
+	TS    string       `json:"ts"`
 }
 
-// appendFile writes one receipt batch. Tests replace it to make a disk fail
-// partway through a claim.
-var appendFile = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
-
 // appendReceipt records one state change. The caller holds the mailbox lock.
-func (s *Store) appendReceipt(id, msgID, state string) error {
+func (s *Store) appendReceipt(id, msgID string, state MessageState) error {
 	return s.appendReceipts(id, []receipt{{ID: msgID, State: state, TS: envelope.FormatTime(time.Now())}})
 }
 
@@ -501,6 +490,9 @@ func (s *Store) appendReceipts(id string, receipts []receipt) error {
 	}
 	var data []byte
 	for _, r := range receipts {
+		if !r.State.Valid() {
+			return fmt.Errorf("bad message state %q", r.State)
+		}
 		line, err := json.Marshal(r)
 		if err != nil {
 			return err
@@ -523,13 +515,21 @@ func (s *Store) appendReceipts(id string, receipts []receipt) error {
 		return err
 	}
 	before := info.Size()
-	if _, err := appendFile(f, data); err != nil {
+	if _, err := s.writeReceipts(f, data); err != nil {
 		if terr := f.Truncate(before); terr != nil {
 			return fmt.Errorf("%w (and the partial receipt could not be removed: %v)", err, terr)
 		}
 		return err
 	}
 	return nil
+}
+
+// writeReceipts appends one receipt batch to f.
+func (s *Store) writeReceipts(f *os.File, data []byte) (int, error) {
+	if s.write == nil {
+		return f.Write(data)
+	}
+	return s.write(f, data)
 }
 
 // trimTail truncates f to its last complete line, so the next append never
@@ -554,19 +554,8 @@ func trimTail(f *os.File) error {
 	return f.Truncate(int64(bytes.LastIndexByte(data, '\n') + 1))
 }
 
-func join(envs []envelope.Envelope, states map[string]string) []Message {
-	msgs := make([]Message, len(envs))
-	for i, env := range envs {
-		state, ok := states[env.ID]
-		if !ok {
-			state = StateStored
-		}
-		msgs[i] = Message{Envelope: env, State: state}
-	}
-	return msgs
-}
-
-// messagesLocked reads a mailbox the caller has already locked.
+// messagesLocked reads a mailbox the caller has already locked. It assembles
+// every view of a mailbox: the envelopes, their states and their short ids.
 func (s *Store) messagesLocked(f *os.File, id string) ([]Message, error) {
 	envs, err := readInbox(f)
 	if err != nil {
@@ -576,7 +565,18 @@ func (s *Store) messagesLocked(f *os.File, id string) ([]Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return join(envs, states), nil
+	msgs := make([]Message, len(envs))
+	for i, env := range envs {
+		state, ok := states[env.ID]
+		if !ok {
+			state = StateStored
+		}
+		msgs[i] = Message{Envelope: env, State: state}
+	}
+	for i := range msgs {
+		msgs[i].Short = shortID(msgs, msgs[i].Envelope.ID)
+	}
+	return msgs, nil
 }
 
 // find returns the message with exactly this id.

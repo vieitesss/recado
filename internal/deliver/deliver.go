@@ -23,11 +23,11 @@ type Service struct {
 	Harnesses harness.Set
 }
 
-// Result is what a delivery did with one envelope.
+// Result is what a delivery did with one envelope. The message carries the
+// state it has now and the short id the recipient sees.
 type Result struct {
 	Message store.Message
-	Short   string // the id the recipient sees
-	Pushed  bool   // handed to the live harness now, rather than left to drain
+	Pushed  bool // handed to the live harness now, rather than left to drain
 }
 
 // Deliver stores env and, when the recipient is live and its harness can take
@@ -56,11 +56,11 @@ func (s *Service) Deliver(env envelope.Envelope) (Result, error) {
 		return Result{}, err
 	}
 	defer release()
-	return s.deliver(env, to.Agent)
+	return s.deliverLocked(env, to.Agent)
 }
 
-// deliver runs one delivery with the recipient's delivery lock held.
-func (s *Service) deliver(env envelope.Envelope, id string) (Result, error) {
+// deliverLocked runs one delivery with the recipient's delivery lock held.
+func (s *Service) deliverLocked(env envelope.Envelope, id string) (Result, error) {
 	agent, err := s.Store.Lookup(id)
 	if err != nil {
 		return Result{}, err
@@ -72,7 +72,7 @@ func (s *Service) deliver(env envelope.Envelope, id string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Message: store.Message{Envelope: env, State: store.StateStored}, Short: short}
+	res := Result{Message: store.Message{Envelope: env, State: store.StateStored, Short: short}}
 
 	h, ok := s.Harnesses.Lookup(agent.Harness)
 	if !ok || !agent.Live() {
@@ -93,7 +93,7 @@ func (s *Service) deliver(env envelope.Envelope, id string) (Result, error) {
 		return res, nil
 	}
 	pushed, rest := s.push(agent, h, claimed)
-	if err := releaseMessages(s.Store, id, rest); err != nil {
+	if err := s.release(id, rest); err != nil {
 		return Result{}, err
 	}
 	for _, msg := range pushed {
@@ -116,10 +116,7 @@ func (s *Service) deliver(env envelope.Envelope, id string) (Result, error) {
 // failure. It returns the messages handed over and the ones still claimed.
 func (s *Service) push(agent store.Agent, h harness.Harness, msgs []store.Message) (pushed, rest []store.Message) {
 	for i, msg := range msgs {
-		text, err := s.Store.Render(agent.ID, msg.Envelope)
-		if err != nil {
-			return pushed, msgs[i:]
-		}
+		text := envelope.Render(msg.Envelope, msg.Short)
 		if err := h.Push(agent, harness.Outgoing{Envelope: msg.Envelope, Text: text}); err != nil {
 			return pushed, msgs[i:]
 		}
@@ -128,12 +125,11 @@ func (s *Service) push(agent store.Agent, h harness.Harness, msgs []store.Messag
 	return pushed, nil
 }
 
-// releaseMessages returns claimed messages to stored, so a later drain retries
-// them.
-func releaseMessages(st *store.Store, id string, msgs []store.Message) error {
+// release returns claimed messages to stored, so a later drain retries them.
+func (s *Service) release(id string, msgs []store.Message) error {
 	var first error
 	for _, msg := range msgs {
-		if err := st.Release(id, msg.Envelope.ID); err != nil && first == nil {
+		if err := s.Store.Release(id, msg.Envelope.ID); err != nil && first == nil {
 			first = err
 		}
 	}
@@ -179,11 +175,11 @@ func (s *Service) Drain(id string) (Drained, error) {
 		return Drained{}, err
 	}
 	defer release()
-	return s.drain(id)
+	return s.drainLocked(id)
 }
 
-// drain runs one drain with the recipient's delivery lock held.
-func (s *Service) drain(id string) (Drained, error) {
+// drainLocked runs one drain with the recipient's delivery lock held.
+func (s *Service) drainLocked(id string) (Drained, error) {
 	agent, err := s.Store.Lookup(id)
 	if err != nil {
 		return Drained{}, err
@@ -226,5 +222,5 @@ func (s *Service) TurnEnd(id string) (Drained, error) {
 	if err := s.Store.SetState(id, store.AgentIdle); err != nil {
 		return Drained{}, err
 	}
-	return s.drain(id)
+	return s.drainLocked(id)
 }

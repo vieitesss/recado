@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestClaimPendingClaimsOnce(t *testing.T) {
 		t.Fatalf("receipts = %d lines, want 3", len(receipts))
 	}
 	for i, want := range []string{ulidA, ulidB, ulidC} {
-		if receipts[i]["id"] != want || receipts[i]["state"] != StateQueued {
+		if receipts[i]["id"] != want || receipts[i]["state"] != string(StateQueued) {
 			t.Errorf("receipt %d = %v, want id %s state %s", i, receipts[i], want, StateQueued)
 		}
 		if _, err := envelope.ParseTime(receipts[i]["ts"]); err != nil {
@@ -124,21 +125,20 @@ func TestMarkQueuedRead(t *testing.T) {
 	}
 }
 
-func TestRenderUsesMailboxShortID(t *testing.T) {
+func TestMessagesCarryTheirMailboxShortID(t *testing.T) {
 	s, _ := open(t)
-	if err := s.Append("sub-1", message(ulidA, "hello")); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{ulidA, ulidB} {
+		if err := s.Append("sub-1", message(id, id)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	msg, err := s.Resolve("sub-1", "5v6t7")
+	msgs, err := s.Messages("sub-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	text, err := s.Render("sub-1", msg.Envelope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(text, "[recado] from asker · message (id v6t7)\nhello") {
-		t.Errorf("Render = %q", text)
+	// The two ids share their last four characters, so each needs one more.
+	if len(msgs) != 2 || msgs[0].Short != "5v6t7" || msgs[1].Short != "4v6t7" {
+		t.Fatalf("Messages = %+v, want each message to carry its own short id", msgs)
 	}
 }
 
@@ -218,7 +218,7 @@ func TestClaimPendingClaimsNothingWhenReceiptsFailPartway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restore := failAfterFileWrites(t, len(sample)+1)
+	restore := failAfterFileWrites(t, s, len(sample)+1)
 	if _, err := s.ClaimPending("sub-1"); err == nil {
 		t.Fatal("ClaimPending succeeded though its receipts could not be written")
 	}
@@ -242,14 +242,13 @@ func TestClaimPendingClaimsNothingWhenReceiptsFailPartway(t *testing.T) {
 	}
 }
 
-// failAfterFileWrites lets appendFile write n bytes in total, then fails every
-// later write. It simulates a disk filling up partway through a claim.
-func failAfterFileWrites(t *testing.T, n int) (restore func()) {
+// failAfterFileWrites lets s write n bytes in total, then fails every later
+// write. It simulates a disk filling up partway through a claim.
+func failAfterFileWrites(t *testing.T, s *Store, n int) (restore func()) {
 	t.Helper()
-	old := appendFile
 	written := 0
 	errDiskFull := errors.New("disk full")
-	appendFile = func(f *os.File, data []byte) (int, error) {
+	s.write = func(f *os.File, data []byte) (int, error) {
 		room := n - written
 		if room <= 0 {
 			return 0, errDiskFull
@@ -268,9 +267,34 @@ func failAfterFileWrites(t *testing.T, n int) (restore func()) {
 		}
 		return m, nil
 	}
-	restore = func() { appendFile = old }
+	restore = func() { s.write = nil }
 	t.Cleanup(restore)
 	return restore
+}
+
+// TestAppendReceiptRejectsUnknownState keeps the store from recording a state
+// outside the message model, however a caller asks for one.
+func TestAppendReceiptRejectsUnknownState(t *testing.T) {
+	s, _ := open(t)
+	if err := s.Append("sub-1", message(ulidA, "first")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.lockMailbox("sub-1", syscall.LOCK_EX)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.appendReceipts("sub-1", []receipt{{ID: ulidA, State: "lost", TS: envelope.FormatTime(time.Now())}})
+	unlock(f)
+	if err == nil {
+		t.Fatal("appendReceipts recorded a state recado does not have")
+	}
+	msgs, err := s.Messages("sub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].State != StateStored {
+		t.Fatalf("Messages = %+v, want the message still stored", msgs)
+	}
 }
 
 func readReceipts(t *testing.T, s *Store, id string) []map[string]string {

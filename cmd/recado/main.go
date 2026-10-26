@@ -141,17 +141,28 @@ func (a *app) service() (*deliver.Service, error) {
 
 // whoami is RECADO_ADDR, else what a harness adapter detects.
 func (a *app) whoami() (addr.Address, error) {
-	if v := os.Getenv("RECADO_ADDR"); v != "" {
-		self, err := addr.Parse(v)
-		if err != nil {
-			return addr.Address{}, usagef("RECADO_ADDR: %v", err)
-		}
-		return self, nil
+	self, ok, err := envAddr()
+	if err != nil || ok {
+		return self, err
 	}
 	if _, id, ok := a.Harnesses.Detect(os.Environ()); ok {
 		return addr.Local(id), nil
 	}
 	return addr.Address{}, usagef("cannot tell which agent this is: set RECADO_ADDR or run inside a supported harness")
+}
+
+// envAddr is RECADO_ADDR parsed, when it is set: the caller's own address, or
+// the agent a hook runs for.
+func envAddr() (addr.Address, bool, error) {
+	v := os.Getenv("RECADO_ADDR")
+	if v == "" {
+		return addr.Address{}, false, nil
+	}
+	self, err := addr.Parse(v)
+	if err != nil {
+		return addr.Address{}, false, usagef("RECADO_ADDR: %v", err)
+	}
+	return self, true, nil
 }
 
 // target is the mailbox a listing command works on: --as ADDR, else the
@@ -260,7 +271,7 @@ type sent struct {
 }
 
 func view(res deliver.Result) sent {
-	return sent{ID: res.Message.Envelope.ID, Short: res.Short, To: res.Message.Envelope.To, Pushed: res.Pushed}
+	return sent{ID: res.Message.Envelope.ID, Short: res.Message.Short, To: res.Message.Envelope.To, Pushed: res.Pushed}
 }
 
 func printSent(cmd *cobra.Command, r sent) error {
@@ -269,6 +280,22 @@ func printSent(cmd *cobra.Command, r sent) error {
 	}
 	_, err := fmt.Fprintln(cmd.OutOrStdout(), r.Short)
 	return err
+}
+
+// printMessages prints how each message reads in its recipient's timeline,
+// with a blank line between messages.
+func printMessages(w io.Writer, msgs []message) error {
+	for i, msg := range msgs {
+		if i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(w, msg.Text); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // message is one mailbox entry, rendered for a person or a script. Text is
@@ -281,18 +308,15 @@ type message struct {
 	Envelope envelope.Envelope `json:"envelope"`
 }
 
-func (a *app) message(st *store.Store, mailbox string, msg store.Message) (message, error) {
-	short, err := st.ShortID(mailbox, msg.Envelope.ID)
-	if err != nil {
-		return message{}, err
-	}
+// viewMessage renders one stored message as a mailbox entry.
+func viewMessage(msg store.Message) message {
 	return message{
 		ID:       msg.Envelope.ID,
-		Short:    short,
-		State:    msg.State,
-		Text:     envelope.Render(msg.Envelope, short),
+		Short:    msg.Short,
+		State:    string(msg.State),
+		Text:     envelope.Render(msg.Envelope, msg.Short),
 		Envelope: msg.Envelope,
-	}, nil
+	}
 }
 
 func matchMeta(meta, want map[string]string) bool {

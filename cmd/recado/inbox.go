@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/store"
 )
 
@@ -55,10 +54,7 @@ of recado's delivery path: recovery and debugging, never the normal path.
 						msg = claimed
 					}
 				}
-				view, err := a.message(st, target.Agent, msg)
-				if err != nil {
-					return err
-				}
+				view := viewMessage(msg)
 				out = append(out, view)
 			}
 
@@ -67,18 +63,7 @@ of recado's delivery path: recovery and debugging, never the normal path.
 					Messages []message `json:"messages"`
 				}{out})
 			}
-			w := cmd.OutOrStdout()
-			for i, msg := range out {
-				if i > 0 {
-					if _, err := fmt.Fprintln(w); err != nil {
-						return err
-					}
-				}
-				if _, err := fmt.Fprintln(w, envelope.Render(msg.Envelope, msg.Short)); err != nil {
-					return err
-				}
-			}
-			return nil
+			return printMessages(cmd.OutOrStdout(), out)
 		}),
 	}
 	cmd.Flags().BoolVar(&peek, "peek", false, "list without claiming the messages")
@@ -106,17 +91,14 @@ short id send printed belongs to the recipient's mailbox.`,
 			if err != nil {
 				return err
 			}
-			view, err := a.message(st, mailbox, msg)
-			if err != nil {
-				return err
-			}
+			view := viewMessage(msg)
 			if jsonFlag(cmd) {
 				return printJSON(cmd, struct {
 					ID      string `json:"id"`
 					Short   string `json:"short"`
 					State   string `json:"state"`
 					Mailbox string `json:"mailbox"`
-				}{view.ID, view.Short, view.State, mailbox})
+				}{ID: view.ID, Short: view.Short, State: view.State, Mailbox: mailbox})
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", view.Short, view.State)
 			return err
@@ -147,7 +129,7 @@ func (a *app) newAgentsCmd() *cobra.Command {
 			}
 			agents := make([]agent, len(list))
 			for i, ag := range list {
-				agents[i] = agent{ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(), State: ag.State}
+				agents[i] = agent{ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(), State: string(ag.State)}
 			}
 			if jsonFlag(cmd) {
 				return printJSON(cmd, struct {

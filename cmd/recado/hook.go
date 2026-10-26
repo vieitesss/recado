@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -39,6 +38,7 @@ those messages as user turns.`,
 			if err != nil {
 				return err
 			}
+			svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
 			switch args[1] {
 			case "session-start":
 				reg := a.registry(h, id)
@@ -48,23 +48,25 @@ those messages as user turns.`,
 				if err := st.Register(reg); err != nil {
 					return err
 				}
-				return a.drain(cmd, st, id)
+				drained, err := svc.Drain(id)
+				if err != nil {
+					return err
+				}
+				return reportDrained(cmd, st, id, drained)
 			case "turn-start":
 				if err := a.ensureAgent(st, h, id); err != nil {
 					return err
 				}
-				svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
 				return svc.TurnStart(id)
 			case "turn-end":
 				if err := a.ensureAgent(st, h, id); err != nil {
 					return err
 				}
-				svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
 				drained, err := svc.TurnEnd(id)
 				if err != nil {
 					return err
 				}
-				return a.reportDrained(cmd, st, id, drained)
+				return reportDrained(cmd, st, id, drained)
 			default:
 				return usagef("unknown hook event %q: want session-start, turn-start or turn-end", args[1])
 			}
@@ -77,11 +79,11 @@ those messages as user turns.`,
 // hookAgent is the agent id a hook runs for: RECADO_ADDR, else the harness's
 // own detection.
 func (a *app) hookAgent(h harness.Harness) (string, error) {
-	if v := os.Getenv("RECADO_ADDR"); v != "" {
-		self, err := addr.Parse(v)
-		if err != nil {
-			return "", usagef("RECADO_ADDR: %v", err)
-		}
+	self, ok, err := envAddr()
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		if !self.IsLocal() {
 			return "", usagef("%s: machines not supported yet", self)
 		}
@@ -109,68 +111,39 @@ func (a *app) ensureAgent(st *store.Store, h harness.Harness, id string) error {
 	return st.Register(a.registry(h, id))
 }
 
-// drain hands the agent's pending messages to its harness, and prints the ones
-// the calling shim must deliver itself.
-func (a *app) drain(cmd *cobra.Command, st *store.Store, id string) error {
-	svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
-	drained, err := svc.Drain(id)
-	if err != nil {
-		return err
-	}
-	return a.reportDrained(cmd, st, id, drained)
-}
-
 // reportDrained prints what the shim must deliver itself. If the output fails,
 // nothing reliable reached the shim: release every claimed message, so a later
 // drain or session start can still deliver it.
-func (a *app) reportDrained(cmd *cobra.Command, st *store.Store, id string, drained deliver.Drained) error {
-	pending := make([]message, 0, len(drained.Pending))
-	for _, msg := range drained.Pending {
-		view, err := a.message(st, id, msg)
-		if err != nil {
-			a.releaseDrained(st, id, drained.Pending)
-			return err
-		}
-		pending = append(pending, view)
-	}
-	pushed := make([]string, 0, len(drained.Pushed))
-	for _, msg := range drained.Pushed {
-		short, err := st.ShortID(id, msg.Envelope.ID)
-		if err != nil {
-			a.releaseDrained(st, id, drained.Pending)
-			return err
-		}
-		pushed = append(pushed, short)
-	}
-
-	if jsonFlag(cmd) {
-		err := printJSON(cmd, struct {
-			Pushed  []string  `json:"pushed"`
-			Pending []message `json:"pending"`
-		}{pushed, pending})
-		if err != nil {
-			a.releaseDrained(st, id, drained.Pending)
-		}
+func reportDrained(cmd *cobra.Command, st *store.Store, id string, drained deliver.Drained) error {
+	if err := printDrained(cmd, drained); err != nil {
+		releasePending(st, id, drained.Pending)
 		return err
-	}
-	w := cmd.OutOrStdout()
-	for i, msg := range pending {
-		if i > 0 {
-			if _, err := fmt.Fprintln(w); err != nil {
-				a.releaseDrained(st, id, drained.Pending)
-				return err
-			}
-		}
-		if _, err := fmt.Fprintln(w, msg.Text); err != nil {
-			a.releaseDrained(st, id, drained.Pending)
-			return err
-		}
 	}
 	return nil
 }
 
-// releaseDrained returns a failed hook's claimed messages to stored.
-func (a *app) releaseDrained(st *store.Store, id string, msgs []store.Message) {
+// printDrained writes the drain report: the pushed short ids and the messages
+// the shim must hand over, as JSON or as the text the shim reads.
+func printDrained(cmd *cobra.Command, drained deliver.Drained) error {
+	pending := make([]message, len(drained.Pending))
+	for i, msg := range drained.Pending {
+		pending[i] = viewMessage(msg)
+	}
+	if jsonFlag(cmd) {
+		pushed := make([]string, len(drained.Pushed))
+		for i, msg := range drained.Pushed {
+			pushed[i] = msg.Short
+		}
+		return printJSON(cmd, struct {
+			Pushed  []string  `json:"pushed"`
+			Pending []message `json:"pending"`
+		}{pushed, pending})
+	}
+	return printMessages(cmd.OutOrStdout(), pending)
+}
+
+// releasePending returns a failed hook's claimed messages to stored.
+func releasePending(st *store.Store, id string, msgs []store.Message) {
 	for _, msg := range msgs {
 		_ = st.Release(id, msg.Envelope.ID)
 	}

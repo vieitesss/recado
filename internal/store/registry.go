@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,35 +15,38 @@ import (
 	"github.com/vieitesss/recado/internal/envelope"
 )
 
-// Agent states a shim records with `recado hook HARNESS turn-start|turn-end`.
-// An absent state means the agent never reported one.
+// AgentState is what an agent's harness last reported: busy while a turn
+// runs, idle between them. An absent state means it never reported one.
+type AgentState string
+
 const (
-	AgentBusy = "busy"
-	AgentIdle = "idle"
+	AgentBusy AgentState = "busy"
+	AgentIdle AgentState = "idle"
 )
+
+// Valid reports whether s is a state a harness reports.
+func (s AgentState) Valid() bool { return s == AgentBusy || s == AgentIdle }
 
 // Agent is one registry entry: agents/<id>.json. The id is the file name, so
 // it is never duplicated inside the file.
 type Agent struct {
-	ID       string    `json:"-"`
-	Harness  string    `json:"harness"`
-	Endpoint string    `json:"endpoint"`
-	PID      int       `json:"pid"`
-	Pane     string    `json:"pane,omitempty"`
-	CWD      string    `json:"cwd,omitempty"`
-	Started  time.Time `json:"started"`
-	State    string    `json:"state,omitempty"`
-	StateTS  string    `json:"state_ts,omitempty"`
+	ID       string     `json:"-"`
+	Harness  string     `json:"harness"`
+	Endpoint string     `json:"endpoint"`
+	PID      int        `json:"pid"`
+	Pane     string     `json:"pane,omitempty"`
+	CWD      string     `json:"cwd,omitempty"`
+	Started  time.Time  `json:"started"`
+	State    AgentState `json:"state,omitempty"`
+	StateTS  string     `json:"state_ts,omitempty"`
 }
 
 // Live reports whether the agent's process is still running.
-func (a Agent) Live() bool { return alive(a.PID) }
-
-func alive(pid int) bool {
-	if pid <= 0 {
+func (a Agent) Live() bool {
+	if a.PID <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
+	err := syscall.Kill(a.PID, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
@@ -114,7 +118,7 @@ func (s *Store) List() ([]Agent, error) {
 	}
 	agents := make([]Agent, 0, len(entries))
 	for _, e := range entries {
-		name, ok := cutSuffix(e.Name(), ".json")
+		name, ok := strings.CutSuffix(e.Name(), ".json")
 		if e.IsDir() || !ok || !addr.ValidID(name) {
 			continue
 		}
@@ -129,7 +133,10 @@ func (s *Store) List() ([]Agent, error) {
 }
 
 // SetState records whether the agent's harness is busy or idle, atomically.
-func (s *Store) SetState(id, state string) error {
+func (s *Store) SetState(id string, state AgentState) error {
+	if !state.Valid() {
+		return fmt.Errorf("bad agent state %q", state)
+	}
 	a, err := s.Lookup(id)
 	if err != nil {
 		return err
@@ -137,11 +144,4 @@ func (s *Store) SetState(id, state string) error {
 	a.State = state
 	a.StateTS = envelope.FormatTime(time.Now())
 	return s.Register(a)
-}
-
-func cutSuffix(s, suffix string) (string, bool) {
-	if len(s) <= len(suffix) || s[len(s)-len(suffix):] != suffix {
-		return s, false
-	}
-	return s[:len(s)-len(suffix)], true
 }

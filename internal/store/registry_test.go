@@ -136,6 +136,9 @@ func TestSetState(t *testing.T) {
 	if err := s.SetState("nobody", AgentIdle); !errors.Is(err, ErrUnknownAgent) {
 		t.Errorf("SetState(unknown) error = %v, want ErrUnknownAgent", err)
 	}
+	if err := s.SetState("sub-1", "sleepy"); err == nil {
+		t.Error("SetState accepted a state no harness reports")
+	}
 }
 
 func TestRegisterRejectsBadID(t *testing.T) {
