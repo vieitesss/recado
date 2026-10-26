@@ -1,0 +1,37 @@
+#!/bin/sh
+# The gate: formatting, vet, staticcheck, then the test suite.
+#   scripts/check                   everything (the merge gate)
+#   scripts/check --fast            skip tests (the pre-commit hook)
+#   scripts/check ./internal/ui/... vet, lint and test only these packages
+set -eu
+cd "$(dirname "$0")/.."
+
+staticcheck=honnef.co/go/tools/cmd/staticcheck@v0.8.2
+
+fast=0
+if [ "${1:-}" = "--fast" ]; then
+	fast=1
+	shift
+fi
+[ "$#" -gt 0 ] || set -- ./...
+
+echo "==> gofmt"
+unformatted=$(gofmt -l cmd internal)
+if [ -n "$unformatted" ]; then
+	echo "gofmt: these files need formatting:" >&2
+	echo "$unformatted" >&2
+	exit 1
+fi
+
+echo "==> go vet"
+go vet "$@"
+
+echo "==> staticcheck"
+# staticcheck needs a newer Go than go.mod; let only its build fetch one,
+# since setup-go pins GOTOOLCHAIN=local on CI.
+GOTOOLCHAIN=auto go run "$staticcheck" "$@"
+
+[ "$fast" -eq 1 ] && exit 0
+
+echo "==> go test (shuffled; rerun a failure with the printed -shuffle seed)"
+go test -shuffle=on -count=1 "$@"
