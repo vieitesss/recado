@@ -1,13 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/deliver"
+	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/harness"
 	"github.com/vieitesss/recado/internal/store"
 )
@@ -23,14 +28,28 @@ session-start registers the agent and drains its mailbox, recording the
 --endpoint the harness accepts pushed messages on; turn-start records busy and
 marks messages delivered this turn read; turn-end records idle and drains.
 Drain output is what recado could not hand over itself: the shim delivers
-those messages as user turns.`,
+those messages as user turns.
+
+--store keeps what a session start cannot hand over for the end of the next
+turn. --hold returns the waiting messages as the decision that starts a new
+turn, because a turn-end hook runs inside the turn it would push into.`,
 		Args: cobra.ExactArgs(2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			h, ok := a.Harnesses.Lookup(args[0])
 			if !ok {
 				return usagef("unknown harness %q", args[0])
 			}
-			id, err := a.hookAgent(h)
+			// Claude Code names the session in the hook's input and exports it to
+			// the agent's shell, but not to later hooks: read it every time.
+			var input []byte
+			if _, ok := h.(harness.Namer); ok {
+				data, err := io.ReadAll(cmd.InOrStdin())
+				if err != nil {
+					return err
+				}
+				input = data
+			}
+			id, err := a.hookAgent(h, input)
 			if err != nil {
 				return err
 			}
@@ -45,12 +64,27 @@ those messages as user turns.`,
 				if reg.Endpoint, err = cmd.Flags().GetString("endpoint"); err != nil {
 					return err
 				}
+				if starter, ok := h.(harness.Starter); ok {
+					if err := starter.Start(&reg, id, os.Environ()); err != nil {
+						return err
+					}
+				}
 				if err := st.Register(reg); err != nil {
 					return err
 				}
 				drained, err := svc.Drain(id)
 				if err != nil {
 					return err
+				}
+				keep, err := cmd.Flags().GetBool("store")
+				if err != nil {
+					return err
+				}
+				if keep && len(drained.Pending) > 0 {
+					// A session start has no channel to the agent itself, so
+					// what it cannot push waits for the turn to end.
+					releasePending(st, id, drained.Pending)
+					drained.Pending = nil
 				}
 				return reportDrained(cmd, st, id, drained)
 			case "turn-start":
@@ -61,6 +95,17 @@ those messages as user turns.`,
 			case "turn-end":
 				if err := a.ensureAgent(st, h, id); err != nil {
 					return err
+				}
+				hold, err := cmd.Flags().GetBool("hold")
+				if err != nil {
+					return err
+				}
+				if hold {
+					held, err := svc.Hold(id)
+					if err != nil {
+						return err
+					}
+					return holdTurn(cmd, st, id, held)
 				}
 				drained, err := svc.TurnEnd(id)
 				if err != nil {
@@ -73,12 +118,14 @@ those messages as user turns.`,
 		}),
 	}
 	cmd.Flags().String("endpoint", "", "where the harness accepts pushed messages (session-start)")
+	cmd.Flags().Bool("store", false, "keep what this event cannot hand over for the next turn end (session-start)")
+	cmd.Flags().Bool("hold", false, "return the waiting messages as the stop decision instead of pushing (turn-end)")
 	return cmd
 }
 
 // hookAgent is the agent id a hook runs for: RECADO_ADDR, else the harness's
 // own detection.
-func (a *app) hookAgent(h harness.Harness) (string, error) {
+func (a *app) hookAgent(h harness.Harness, input []byte) (string, error) {
 	self, ok, err := envAddr()
 	if err != nil {
 		return "", err
@@ -90,6 +137,11 @@ func (a *app) hookAgent(h harness.Harness) (string, error) {
 		return self.Agent, nil
 	}
 	id, ok := h.Detect(os.Environ())
+	if !ok {
+		if namer, isNamer := h.(harness.Namer); isNamer {
+			id, ok = namer.AgentID(input)
+		}
+	}
 	if !ok {
 		return "", usagef("harness %s did not report an agent id; set RECADO_ADDR", h.Name())
 	}
@@ -109,6 +161,32 @@ func (a *app) ensureAgent(st *store.Store, h harness.Harness, id string) error {
 		return err
 	}
 	return st.Register(a.registry(h, id))
+}
+
+// holdTurn answers a turn-end hook that runs inside the turn it reports on:
+// the waiting messages must not be pushed into it, so they come back as the
+// decision that continues the conversation. Nothing waiting means nothing
+// blocks the stop.
+func holdTurn(cmd *cobra.Command, st *store.Store, id string, held deliver.Drained) error {
+	if len(held.Pending) == 0 {
+		return nil
+	}
+	texts := make([]string, len(held.Pending))
+	for i, msg := range held.Pending {
+		texts[i] = envelope.Render(msg.Envelope, msg.Short)
+	}
+	out, err := json.Marshal(struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}{"block", strings.Join(texts, "\n\n")})
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(cmd.OutOrStdout(), string(out)); err != nil {
+		releasePending(st, id, held.Pending)
+		return err
+	}
+	return nil
 }
 
 // reportDrained prints what the shim must deliver itself. If the output fails,

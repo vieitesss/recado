@@ -20,7 +20,8 @@ func (a *app) newSkillCmd() *cobra.Command {
 "recado skill setup" installs a small SKILL.md into each agent harness that
 tells the agent to run "recado skill", so upgrading recado also updates what
 agents are told. It also installs the shim each receiving harness needs, such
-as Pi's extension.`,
+as Pi's extension, and the hook entries Claude Code needs, merged into its own
+settings file without touching the rest of it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprint(cmd.OutOrStdout(), skill.Guide)
@@ -48,6 +49,13 @@ as Pi's extension.`,
 					fmt.Fprintf(cmd.OutOrStdout(), "%-20s installed  %s\n", label, f.Path)
 					return nil
 				}),
+				a.eachHooks(func(cmd *cobra.Command, label string, hooks skill.Hooks) error {
+					if err := hooks.Install(); err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "%-20s installed  %s\n", label, hooks.Path)
+					return nil
+				}),
 			),
 		},
 		&cobra.Command{
@@ -69,6 +77,14 @@ as Pi's extension.`,
 						return err
 					}
 					fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-10s %s\n", label, state, f.Path)
+					return nil
+				}),
+				a.eachHooks(func(cmd *cobra.Command, label string, hooks skill.Hooks) error {
+					state, err := hooks.Inspect()
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-10s %s\n", label, state, hooks.Path)
 					return nil
 				}),
 				a.checkHarnesses,
@@ -96,6 +112,16 @@ as Pi's extension.`,
 					}
 					if removed {
 						fmt.Fprintf(cmd.OutOrStdout(), "%-20s removed    %s\n", label, f.Path)
+					}
+					return nil
+				}),
+				a.eachHooks(func(cmd *cobra.Command, label string, hooks skill.Hooks) error {
+					removed, err := hooks.Remove()
+					if err != nil {
+						return err
+					}
+					if removed {
+						fmt.Fprintf(cmd.OutOrStdout(), "%-20s removed    %s\n", label, hooks.Path)
 					}
 					return nil
 				}),
@@ -131,6 +157,28 @@ func (a *app) eachShim(fn func(cmd *cobra.Command, label string, f skill.File) e
 				if err := fn(cmd, harnessLabel(h, "extension"), f); err != nil {
 					return err
 				}
+			}
+		}
+		return nil
+	}
+}
+
+// eachHooks runs fn for every harness installed by merging hook entries into
+// its settings file: recado's business is the merge, the harness names the file
+// and the entries.
+func (a *app) eachHooks(fn func(cmd *cobra.Command, label string, hooks skill.Hooks) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		for _, h := range a.Harnesses {
+			s, ok := h.(harness.Settings)
+			if !ok {
+				continue
+			}
+			hooks, err := s.HookSettings()
+			if err != nil {
+				return err
+			}
+			if err := fn(cmd, harnessLabel(h, "hooks"), hooks); err != nil {
+				return err
 			}
 		}
 		return nil

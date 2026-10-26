@@ -225,6 +225,22 @@ and `recado skill status` reports it. Evidence and sources:
 `.agents/reports/harness-delivery-research.md` (local) and the research it
 cites.
 
+A harness may also need things `Harness` cannot express, so the adapter builds
+them as optional capabilities beside it: `Starter` (what only the session
+start can see: the messaging socket, the session's token, the process liveness
+follows, and the `RECADO_ADDR` the agent's own shell gets through
+`CLAUDE_ENV_FILE`), `Namer` (Claude Code names the session in its hook input
+and exports it to the shell but not to later hooks) and `Settings` (the hook
+entries `skill setup` merges into the user's `settings.json`, recognised by
+their command prefix, removed without touching the rest of the file). A
+turn-end hook runs inside the turn it reports on, so it cannot push:
+`recado hook claude turn-end --hold` claims what waits and prints it as the
+`decision: "block"` reason, which starts a new turn; a session start has no
+channel to the agent at all, so `--store` leaves an unpushable backlog for
+that turn end instead of handing it to a shim that only Claude Code would
+ignore. The messages a held turn delivered stay `queued`: the continuation
+turn fires no prompt hook to report its start.
+
 The interface is shaped so a later plugin contract can wrap it: an executable
 `recado-harness-<name>` on `PATH` answering `detect`, `push` and `check`, with
 its own shim calling `recado hook <name> …`. More harnesses are expected.

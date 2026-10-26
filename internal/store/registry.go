@@ -33,6 +33,7 @@ type Agent struct {
 	ID       string     `json:"-"`
 	Harness  string     `json:"harness"`
 	Endpoint string     `json:"endpoint"`
+	Token    string     `json:"token,omitempty"` // a session credential, never printed
 	PID      int        `json:"pid"`
 	Pane     string     `json:"pane,omitempty"`
 	CWD      string     `json:"cwd,omitempty"`

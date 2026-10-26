@@ -167,8 +167,10 @@ type Drained struct {
 
 // Drain claims every pending message for id, in order, and pushes it through
 // the agent's harness. A drain runs at session start and turn end, so it is
-// allowed to push even when the recorded state is not idle. Whatever could not
-// be pushed is returned claimed, for the calling shim to deliver itself.
+// allowed to push when the recorded state is idle or was never reported; a
+// harness that cannot take a message mid-turn is left alone while it is busy.
+// Whatever could not be pushed is returned claimed, for the calling shim to
+// deliver itself.
 func (s *Service) Drain(id string) (Drained, error) {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
@@ -189,11 +191,36 @@ func (s *Service) drainLocked(id string) (Drained, error) {
 		return Drained{}, err
 	}
 	h, ok := s.Harnesses.Lookup(agent.Harness)
-	if !ok || !agent.Live() {
+	if !ok || !agent.Live() || (!h.QueuesWhileBusy() && agent.State == store.AgentBusy) {
 		return Drained{Pending: msgs}, nil
 	}
 	pushed, rest := s.push(agent, h, msgs)
 	return Drained{Pushed: pushed, Pending: rest}, nil
+}
+
+// Hold drains id's mailbox without pushing anything, for a harness that hands
+// the messages to the agent itself. A turn-end hook is the case: the turn it
+// runs in is still running, so pushing would land the message inside that turn
+// instead of the next one. The messages come back claimed, in order, for the
+// caller to hand over; the agent is recorded idle only when nothing was
+// waiting, because a held message starts a turn of its own.
+func (s *Service) Hold(id string) (Drained, error) {
+	release, err := s.Store.LockDelivery(id)
+	if err != nil {
+		return Drained{}, err
+	}
+	defer release()
+	if _, err := s.Store.Lookup(id); err != nil {
+		return Drained{}, err
+	}
+	msgs, err := s.Store.ClaimPending(id)
+	if err != nil {
+		return Drained{}, err
+	}
+	if len(msgs) > 0 {
+		return Drained{Pending: msgs}, nil
+	}
+	return Drained{}, s.Store.SetState(id, store.AgentIdle)
 }
 
 // TurnStart records that the harness started a turn: the agent is busy and
