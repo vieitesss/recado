@@ -1,105 +1,297 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/vieitesss/recado/internal/skill"
+	"github.com/vieitesss/recado/internal/addr"
+	"github.com/vieitesss/recado/internal/deliver"
+	"github.com/vieitesss/recado/internal/envelope"
+	"github.com/vieitesss/recado/internal/harness"
+	"github.com/vieitesss/recado/internal/store"
 )
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "recado:", err)
-		os.Exit(1)
+	err := newRootCmd(newApp()).Execute()
+	if err == nil {
+		return
 	}
+	fmt.Fprintln(os.Stderr, "recado:", err)
+	os.Exit(exitCode(err))
 }
 
-func newRootCmd() *cobra.Command {
+// exitError carries the exit code a failure asks for.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e exitError) Error() string { return e.err.Error() }
+func (e exitError) Unwrap() error { return e.err }
+
+// exitCode is the design's contract: 0 success, 1 failure, 2 usage error or
+// unknown address. Untyped errors are cobra's own (unknown command, bad flag,
+// wrong arguments), which are usage errors.
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var e exitError
+	if errors.As(err, &e) {
+		return e.code
+	}
+	return 2
+}
+
+func usage(err error) error { return exitError{2, err} }
+
+func usagef(format string, args ...any) error { return usage(fmt.Errorf(format, args...)) }
+
+// classify turns domain errors into the exit code they deserve: names that do
+// not exist are usage errors, everything else a failure.
+func classify(err error) error {
+	if err == nil {
+		return nil
+	}
+	var e exitError
+	if errors.As(err, &e) {
+		return err
+	}
+	switch {
+	case errors.Is(err, store.ErrUnknownAgent),
+		errors.Is(err, store.ErrUnknownID),
+		errors.Is(err, store.ErrAmbiguousID),
+		errors.Is(err, deliver.ErrRemote):
+		return usage(err)
+	}
+	return exitError{1, err}
+}
+
+// run wraps a command body with exit-code classification.
+func run(fn func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error { return classify(fn(cmd, args)) }
+}
+
+// app is the command tree's dependencies. Tests build one with a temporary
+// state root and a fake harness.
+type app struct {
+	Root      string // state root; empty means store.DefaultRoot()
+	Harnesses harness.Set
+}
+
+func newApp() *app { return &app{Harnesses: harness.Default()} }
+
+func newRootCmd(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "recado",
 		Short:         "Carry messages between agents across harnesses, multiplexers and machines",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Long: `Carry messages between agents: a Manager and the Subagents it launched,
+whichever harness (Claude Code, Codex, Pi, ...) and terminal multiplexer each
+runs in.
+
+State lives in $RECADO_STATE_DIR, else ${XDG_STATE_HOME:-~/.local/state}/recado.
+The caller's address is $RECADO_ADDR, else what the harness adapter detects.`,
 	}
-	root.AddCommand(newSkillCmd())
+	root.PersistentFlags().Bool("json", false, "print machine-readable JSON")
+	root.AddCommand(
+		newSkillCmd(),
+		a.newSendCmd(),
+		a.newAskCmd(),
+		a.newReplyCmd(),
+		a.newDeliverCmd(),
+		a.newInboxCmd(),
+		a.newStatusCmd(),
+		a.newAgentsCmd(),
+		a.newWhoamiCmd(),
+		a.newHookCmd(),
+	)
 	return root
 }
 
-func newSkillCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "skill",
-		Short: "Print the guide agents follow; manage the installed skill",
-		Long: `Print the guide that recado's skill gives agents.
-
-"recado skill setup" installs a small SKILL.md into each agent harness that
-tells the agent to run "recado skill", so upgrading recado also updates what
-agents are told.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprint(cmd.OutOrStdout(), skill.Guide)
-			return err
-		},
+func (a *app) store() (*store.Store, error) {
+	root := a.Root
+	if root == "" {
+		var err error
+		root, err = store.DefaultRoot()
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "setup",
-			Short: "Install recado's skill into agent harnesses",
-			Args:  cobra.NoArgs,
-			RunE: eachTarget(func(cmd *cobra.Command, t skill.Target) error {
-				if err := skill.Install(t); err != nil {
-					return err
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%-20s installed  %s\n", t.Agents, t.Dir)
-				return nil
-			}),
-		},
-		&cobra.Command{
-			Use:   "status",
-			Short: "Report where recado's skill is installed",
-			Args:  cobra.NoArgs,
-			RunE: eachTarget(func(cmd *cobra.Command, t skill.Target) error {
-				state, err := skill.Inspect(t)
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-10s %s\n", t.Agents, state, t.Dir)
-				return nil
-			}),
-		},
-		&cobra.Command{
-			Use:   "remove",
-			Short: "Remove recado's skill from agent harnesses",
-			Args:  cobra.NoArgs,
-			RunE: eachTarget(func(cmd *cobra.Command, t skill.Target) error {
-				removed, err := skill.Remove(t)
-				if err != nil {
-					return err
-				}
-				if removed {
-					fmt.Fprintf(cmd.OutOrStdout(), "%-20s removed    %s\n", t.Agents, t.Dir)
-				}
-				return nil
-			}),
-		},
-	)
-	return cmd
+	return store.Open(root)
 }
 
-// eachTarget runs fn for every skill directory under the user's home.
-func eachTarget(fn func(*cobra.Command, skill.Target) error) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, _ []string) error {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		for _, t := range skill.Targets(home) {
-			if err := fn(cmd, t); err != nil {
-				return err
-			}
-		}
-		return nil
+func (a *app) service() (*deliver.Service, error) {
+	st, err := a.store()
+	if err != nil {
+		return nil, err
 	}
+	return &deliver.Service{Store: st, Harnesses: a.Harnesses}, nil
+}
+
+// whoami is RECADO_ADDR, else what a harness adapter detects.
+func (a *app) whoami() (addr.Address, error) {
+	if v := os.Getenv("RECADO_ADDR"); v != "" {
+		self, err := addr.Parse(v)
+		if err != nil {
+			return addr.Address{}, usagef("RECADO_ADDR: %v", err)
+		}
+		return self, nil
+	}
+	if _, id, ok := a.Harnesses.Detect(os.Environ()); ok {
+		return addr.Local(id), nil
+	}
+	return addr.Address{}, usagef("cannot tell which agent this is: set RECADO_ADDR or run inside a supported harness")
+}
+
+// target is the mailbox a listing command works on: --as ADDR, else the
+// caller.
+func (a *app) target(as string) (addr.Address, error) {
+	if as == "" {
+		return a.whoami()
+	}
+	t, err := addr.Parse(as)
+	if err != nil {
+		return addr.Address{}, usage(err)
+	}
+	if !t.IsLocal() {
+		return addr.Address{}, usagef("%s: machines not supported yet", t)
+	}
+	return t, nil
+}
+
+// registry is the entry a session-start hook writes.
+func (a *app) registry(h harness.Harness, id string) store.Agent {
+	cwd, _ := os.Getwd()
+	return store.Agent{
+		ID:      id,
+		Harness: h.Name(),
+		PID:     agentPID(),
+		Pane:    os.Getenv("TMUX_PANE"),
+		CWD:     cwd,
+		Started: time.Now().UTC(),
+	}
+}
+
+// agentPID is the process liveness is checked against. A hook exits at once,
+// so its own pid would make every agent look gone: use the launcher's
+// RECADO_PID when it knows it, else the hook's parent process.
+func agentPID() int {
+	if v := os.Getenv("RECADO_PID"); v != "" {
+		if pid, err := strconv.Atoi(v); err == nil && pid > 0 {
+			return pid
+		}
+	}
+	return os.Getppid()
+}
+
+// metaFlag collects repeated --meta k=v pairs.
+type metaFlag map[string]string
+
+func (m metaFlag) String() string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, len(keys))
+	for i, k := range keys {
+		pairs[i] = k + "=" + m[k]
+	}
+	return strings.Join(pairs, ",")
+}
+
+func (m metaFlag) Type() string { return "k=v" }
+
+func (m metaFlag) Set(s string) error {
+	k, v, ok := strings.Cut(s, "=")
+	if !ok || k == "" {
+		return fmt.Errorf("meta wants k=v, got %q", s)
+	}
+	if m == nil {
+		return errors.New("meta flag is not initialized")
+	}
+	m[k] = v
+	return nil
+}
+
+// readBody is TEXT, or stdin when TEXT is "-".
+func readBody(cmd *cobra.Command, text string) (string, error) {
+	if text != "-" {
+		return text, nil
+	}
+	data, err := io.ReadAll(cmd.InOrStdin())
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(string(data), "\n"), nil
+}
+
+func jsonFlag(cmd *cobra.Command) bool {
+	on, err := cmd.Flags().GetBool("json")
+	return err == nil && on
+}
+
+func printJSON(cmd *cobra.Command, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	return err
+}
+
+// sent is what send, ask, reply and deliver print.
+type sent struct {
+	ID     string `json:"id"`
+	Short  string `json:"short"`
+	To     string `json:"to"`
+	Pushed bool   `json:"pushed"`
+}
+
+func view(res deliver.Result) sent {
+	return sent{ID: res.Message.Envelope.ID, Short: res.Short, To: res.Message.Envelope.To, Pushed: res.Pushed}
+}
+
+func printSent(cmd *cobra.Command, r sent) error {
+	if jsonFlag(cmd) {
+		return printJSON(cmd, r)
+	}
+	_, err := fmt.Fprintln(cmd.OutOrStdout(), r.Short)
+	return err
+}
+
+// message is one mailbox entry, rendered for a person or a script.
+type message struct {
+	ID       string            `json:"id"`
+	Short    string            `json:"short"`
+	State    string            `json:"state"`
+	Envelope envelope.Envelope `json:"envelope"`
+}
+
+func (a *app) message(st *store.Store, mailbox string, msg store.Message) (message, error) {
+	short, err := st.ShortID(mailbox, msg.Envelope.ID)
+	if err != nil {
+		return message{}, err
+	}
+	return message{ID: msg.Envelope.ID, Short: short, State: msg.State, Envelope: msg.Envelope}, nil
+}
+
+func matchMeta(meta, want map[string]string) bool {
+	for k, v := range want {
+		if meta[k] != v {
+			return false
+		}
+	}
+	return true
 }

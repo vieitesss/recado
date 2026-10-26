@@ -129,7 +129,8 @@ Everything lives under `${XDG_STATE_HOME:-~/.local/state}/recado`, mode `0700`
 for directories and `0600` for files:
 
 ```
-agents/<id>.json        registry: harness, endpoint, pid, pane, cwd, started
+agents/<id>.json        registry: harness, endpoint, pid, pane, cwd, started,
+                        state, state_ts
 mail/<id>/inbox.jsonl   append-only envelopes for that agent
 mail/<id>/receipts.jsonl  append-only state changes {id, state, ts}
 outbox.jsonl            messages for upstream addresses (remote machines only)
@@ -147,6 +148,11 @@ session-start`), writing `agents/<id>.json`. An entry stays after the agent
 exits; liveness is its pid. `send` to an id that was never registered fails
 at once (exit 2), so a typo never vanishes silently. Messages to a gone agent
 wait in its mailbox and arrive when a session with that id starts again.
+
+`recado hook HARNESS turn-start|turn-end` rewrites the entry atomically
+(temp file and rename, `0600`) with `state` (`busy` or `idle`) and `state_ts`
+(RFC 3339). An entry without them has never reported a turn, which a harness
+that cannot queue mid-turn treats as not idle.
 
 ## Delivery
 
