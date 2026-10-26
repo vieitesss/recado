@@ -150,10 +150,11 @@ func TestPushIsNotDeliveredAgainByDrain(t *testing.T) {
 
 func TestDrainDeliversStoredMessagesInOrder(t *testing.T) {
 	f := setup(t, false)
-	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	f.register(t, "worker", os.Getpid(), store.AgentIdle)
 
+	// Stored while the agent was busy, as a mid-turn send leaves them.
 	for _, body := range []string{"first", "second"} {
-		if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
+		if err := f.st.Append("worker", f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -598,9 +599,10 @@ func TestDeliverRendersTheMessageForTheRecipient(t *testing.T) {
 
 func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
 	f := setup(t, false)
-	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	f.register(t, "worker", os.Getpid(), store.AgentIdle)
+	// Stored while the agent was busy, as a mid-turn send leaves them.
 	for _, body := range []string{"first", "second"} {
-		if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
+		if err := f.st.Append("worker", f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -641,5 +643,92 @@ func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
 	}
 	if len(pushes) != 2 || pushes[0].Body != "first" || pushes[1].Body != "second" {
 		t.Fatalf("pushes = %+v, want first then second with no duplicate", pushes)
+	}
+}
+
+func TestDrainLeavesMessagesForABusyNonQueueingHarness(t *testing.T) {
+	f := setup(t, false) // cannot take a message mid-turn
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "hi", nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	drained, err := f.svc.Drain("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drained.Pushed) != 0 || len(drained.Pending) != 1 {
+		t.Fatalf("Drain = %d pushed, %d pending; want the message left for the turn-end hook", len(drained.Pushed), len(drained.Pending))
+	}
+	if pushes, err := f.fake.Pushes(); err != nil || len(pushes) != 0 {
+		t.Fatalf("pushes = %d, %v; want none: the harness was busy", len(pushes), err)
+	}
+}
+
+func TestHoldHandsPendingMessagesBackWithoutPushing(t *testing.T) {
+	f := setup(t, false)
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	for _, body := range []string{"first", "second"} {
+		if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	held, err := f.svc.Hold("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held.Pushed) != 0 {
+		t.Errorf("Pushed = %d, want none: a held turn never pushes", len(held.Pushed))
+	}
+	if len(held.Pending) != 2 || held.Pending[0].Envelope.Body != "first" || held.Pending[1].Envelope.Body != "second" {
+		t.Fatalf("Pending = %+v, want both messages in order", held.Pending)
+	}
+	if pushes, err := f.fake.Pushes(); err != nil || len(pushes) != 0 {
+		t.Fatalf("pushes = %d, %v; want none", len(pushes), err)
+	}
+	for _, msg := range held.Pending {
+		if got := f.state(t, "worker", msg.Envelope.ID); got != store.StateQueued {
+			t.Errorf("state = %q, want %q: the messages belong to the caller now", got, store.StateQueued)
+		}
+	}
+	agent, err := f.st.Lookup("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.State != store.AgentBusy {
+		t.Errorf("agent state = %q, want busy: the held messages start a new turn", agent.State)
+	}
+
+	// The new turn marks them read, and a later hold finds nothing.
+	if err := f.svc.TurnStart("worker"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := f.svc.Hold("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Pushed)+len(again.Pending) != 0 {
+		t.Errorf("second Hold delivered %d messages again", len(again.Pushed)+len(again.Pending))
+	}
+}
+
+func TestHoldRecordsIdleWhenNothingIsPending(t *testing.T) {
+	f := setup(t, false)
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+
+	held, err := f.svc.Hold("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held.Pushed)+len(held.Pending) != 0 {
+		t.Errorf("Hold = %+v, want nothing to hand back", held)
+	}
+	agent, err := f.st.Lookup("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.State != store.AgentIdle {
+		t.Errorf("agent state = %q, want idle: nothing was waiting, so the turn really ended", agent.State)
 	}
 }

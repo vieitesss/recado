@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/vieitesss/recado/internal/envelope"
+	"github.com/vieitesss/recado/internal/skill"
 	"github.com/vieitesss/recado/internal/store"
 )
 
@@ -40,11 +41,31 @@ type Shim struct {
 	Mode    os.FileMode
 }
 
+// Starter is the optional capability of a harness whose session start must
+// configure the session from the hook process itself: where the session
+// accepts pushes, any credential, which process liveness follows, and the
+// variables the agent's own shell needs. Only the hook can see that.
+type Starter interface {
+	Start(agent *store.Agent, id string, env []string) error
+}
+
+// Namer is the optional capability of a harness that names the agent in the
+// hook's own input rather than in the environment.
+type Namer interface {
+	AgentID(hookInput []byte) (string, bool)
+}
+
+// Settings is the optional capability of a harness installed by merging hook
+// entries into a JSON settings file rather than by copying a shim file.
+type Settings interface {
+	HookSettings() (skill.Hooks, error)
+}
+
 // Set is the harnesses this binary knows.
 type Set []Harness
 
 // Default is the harnesses built into recado.
-func Default() Set { return Set{&Pi{}, &OpenCode{}} }
+func Default() Set { return Set{&Pi{}, &Claude{}, &OpenCode{}} }
 
 // Lookup finds the harness with this name.
 func (s Set) Lookup(name string) (Harness, bool) {
