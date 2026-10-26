@@ -41,13 +41,86 @@ If the command fails, run ` + "`recado --help`" + `.
 `
 }
 
+// MarkerShim stamps the files that carry a harness shim, so recado can tell an
+// outdated copy of its own (repairable) from a file someone else wrote.
+const MarkerShim = "recado-shim:"
+
+// File is one file recado installs for an agent harness: the skill stub, or a
+// harness shim such as Pi's extension. Marker appears in every file recado
+// writes.
+type File struct {
+	Path    string
+	Content []byte
+	Mode    os.FileMode
+	Marker  string
+}
+
+// Inspect reports what is at f.Path.
+func (f File) Inspect() (State, error) {
+	data, err := os.ReadFile(f.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Missing, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case string(data) == string(f.Content):
+		return Current, nil
+	case strings.Contains(string(data), f.Marker):
+		return Outdated, nil
+	default:
+		return Foreign, nil
+	}
+}
+
+// Install writes f, replacing an outdated copy. It refuses to overwrite a file
+// recado did not write.
+func (f File) Install() error {
+	state, err := f.Inspect()
+	if err != nil {
+		return err
+	}
+	if state == Foreign {
+		return fmt.Errorf("%s was not installed by recado; remove it first", f.Path)
+	}
+	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(f.Path, f.Content, f.Mode)
+}
+
+// Remove deletes f, leaving a file recado did not write. It reports whether it
+// removed anything.
+func (f File) Remove() (bool, error) {
+	state, err := f.Inspect()
+	if err != nil {
+		return false, err
+	}
+	switch state {
+	case Missing:
+		return false, nil
+	case Foreign:
+		return false, fmt.Errorf("%s was not installed by recado; leaving it", f.Path)
+	}
+	return true, os.Remove(f.Path)
+}
+
 // Target is one place an agent harness looks for skills.
 type Target struct {
 	Agents string // the harnesses that read this directory
 	Dir    string // the recado skill directory
 }
 
-func (t Target) file() string { return filepath.Join(t.Dir, "SKILL.md") }
+// installed is the SKILL.md this target holds.
+func (t Target) installed() File {
+	return File{
+		Path:    filepath.Join(t.Dir, "SKILL.md"),
+		Content: []byte(Stub()),
+		Mode:    0o644,
+		Marker:  stubMarker,
+	}
+}
 
 // Targets lists the skill directories under home: Claude Code reads its own,
 // and Codex, OpenCode and Pi share ~/.agents/skills.
@@ -73,55 +146,18 @@ func (s State) String() string {
 }
 
 // Inspect reports what t holds.
-func Inspect(t Target) (State, error) {
-	data, err := os.ReadFile(t.file())
-	if errors.Is(err, os.ErrNotExist) {
-		return Missing, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	switch {
-	case string(data) == Stub():
-		return Current, nil
-	case strings.Contains(string(data), stubMarker):
-		return Outdated, nil
-	default:
-		return Foreign, nil
-	}
-}
+func Inspect(t Target) (State, error) { return t.installed().Inspect() }
 
 // Install writes the stub into t, replacing an outdated one. It refuses to
 // overwrite a skill recado did not install.
-func Install(t Target) error {
-	state, err := Inspect(t)
-	if err != nil {
-		return err
-	}
-	if state == Foreign {
-		return fmt.Errorf("%s holds a skill recado did not install; remove it first", t.file())
-	}
-	if err := os.MkdirAll(t.Dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(t.file(), []byte(Stub()), 0o644)
-}
+func Install(t Target) error { return t.installed().Install() }
 
-// Remove deletes the stub from t, leaving a skill recado did not install.
-// It reports whether it removed anything.
+// Remove deletes the stub from t, leaving a skill recado did not install. It
+// reports whether it removed anything.
 func Remove(t Target) (bool, error) {
-	state, err := Inspect(t)
-	if err != nil {
-		return false, err
-	}
-	switch state {
-	case Missing:
-		return false, nil
-	case Foreign:
-		return false, fmt.Errorf("%s holds a skill recado did not install; leaving it", t.file())
-	}
-	if err := os.Remove(t.file()); err != nil {
-		return false, err
+	removed, err := t.installed().Remove()
+	if err != nil || !removed {
+		return removed, err
 	}
 	// Leave the directory if the user keeps anything else in it.
 	if entries, err := os.ReadDir(t.Dir); err != nil || len(entries) > 0 {

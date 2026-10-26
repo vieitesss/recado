@@ -15,16 +15,17 @@ import (
 )
 
 func (a *app) newHookCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:    "hook HARNESS EVENT",
 		Short:  "Record a harness lifecycle event",
 		Hidden: true,
 		Long: `Convert a harness lifecycle event into recado state. Harness shims call it.
 
-session-start registers the agent and drains its mailbox; turn-start records
-busy and marks messages delivered this turn read; turn-end records idle and
-drains. Drain output is what recado could not hand over itself: the shim
-delivers those messages.`,
+session-start registers the agent and drains its mailbox, recording the
+--endpoint the harness accepts pushed messages on; turn-start records busy and
+marks messages delivered this turn read; turn-end records idle and drains.
+Drain output is what recado could not hand over itself: the shim delivers
+those messages as user turns.`,
 		Args: cobra.ExactArgs(2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			h, ok := a.Harnesses.Lookup(args[0])
@@ -41,7 +42,11 @@ delivers those messages.`,
 			}
 			switch args[1] {
 			case "session-start":
-				if err := st.Register(a.registry(h, id)); err != nil {
+				reg := a.registry(h, id)
+				if reg.Endpoint, err = cmd.Flags().GetString("endpoint"); err != nil {
+					return err
+				}
+				if err := st.Register(reg); err != nil {
 					return err
 				}
 				return a.drain(cmd, st, id)
@@ -66,6 +71,8 @@ delivers those messages.`,
 			}
 		}),
 	}
+	cmd.Flags().String("endpoint", "", "where the harness accepts pushed messages (session-start)")
+	return cmd
 }
 
 // hookAgent is the agent id a hook runs for: RECADO_ADDR, else the harness's

@@ -105,7 +105,7 @@ The caller's address is $RECADO_ADDR, else what the harness adapter detects.`,
 	}
 	root.PersistentFlags().Bool("json", false, "print machine-readable JSON")
 	root.AddCommand(
-		newSkillCmd(),
+		a.newSkillCmd(),
 		a.newSendCmd(),
 		a.newAskCmd(),
 		a.newReplyCmd(),
@@ -271,11 +271,13 @@ func printSent(cmd *cobra.Command, r sent) error {
 	return err
 }
 
-// message is one mailbox entry, rendered for a person or a script.
+// message is one mailbox entry, rendered for a person or a script. Text is
+// how the agent sees it in its timeline: what a shim sends as a user turn.
 type message struct {
 	ID       string            `json:"id"`
 	Short    string            `json:"short"`
 	State    string            `json:"state"`
+	Text     string            `json:"text"`
 	Envelope envelope.Envelope `json:"envelope"`
 }
 
@@ -284,7 +286,13 @@ func (a *app) message(st *store.Store, mailbox string, msg store.Message) (messa
 	if err != nil {
 		return message{}, err
 	}
-	return message{ID: msg.Envelope.ID, Short: short, State: msg.State, Envelope: msg.Envelope}, nil
+	return message{
+		ID:       msg.Envelope.ID,
+		Short:    short,
+		State:    msg.State,
+		Text:     envelope.Render(msg.Envelope, short),
+		Envelope: msg.Envelope,
+	}, nil
 }
 
 func matchMeta(meta, want map[string]string) bool {

@@ -116,7 +116,7 @@ For launchers, scripts and the TUI, not documented in the agent guide:
 | `recado agents` | lists registered agents, live or gone |
 | `recado whoami` | prints the caller's address |
 | `recado machine add NAME KIND TARGET`, `rm`, `ls` | manages the machine registry |
-| `recado hook HARNESS EVENT` | called by harness shims |
+| `recado hook HARNESS EVENT [--endpoint PATH]` | called by harness shims; session start records where the harness accepts pushes |
 | `recado relay MACHINE`, `recado outbox` | cross-machine plumbing |
 | `recado skill [setup\|status\|remove]` | installs the skill stub and harness shims |
 
@@ -133,6 +133,7 @@ agents/<id>.json        registry: harness, endpoint, pid, pane, cwd, started,
                         state, state_ts
 mail/<id>/inbox.jsonl   append-only envelopes for that agent
 mail/<id>/receipts.jsonl  append-only state changes {id, state, ts}
+run/pi-<pid>.sock       the Pi extension's socket, while its session lives
 outbox.jsonl            messages for upstream addresses (remote machines only)
 relay/<machine>.{lock,cursor,log}
 ```

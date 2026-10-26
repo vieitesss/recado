@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -400,5 +401,109 @@ func TestClassifyInternalError(t *testing.T) {
 	}
 	if got := exitCode(nil); got != 0 {
 		t.Errorf("nil error exit = %d, want 0", got)
+	}
+}
+
+func TestHookSessionStartRecordsTheEndpoint(t *testing.T) {
+	a, _ := newTestApp(t, true)
+	t.Setenv("RECADO_ADDR", "worker")
+	mustExec(t, a, "", "hook", "fake", "session-start", "--endpoint", "/tmp/recado-pi.sock")
+
+	st, err := a.store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.Lookup("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Endpoint != "/tmp/recado-pi.sock" {
+		t.Errorf("endpoint = %q, want the socket the shim pushed", agent.Endpoint)
+	}
+}
+
+func TestTurnEndJSONCarriesTheTextTheShimDelivers(t *testing.T) {
+	a, fake := newTestApp(t, false)
+	startSession(t, a, "worker")
+	t.Setenv("RECADO_ADDR", "asker")
+	short := strings.TrimSpace(mustExec(t, a, "", "send", "worker", "one\ntwo"))
+
+	fake.Fail = true
+	t.Setenv("RECADO_ADDR", "worker")
+	out := mustExec(t, a, "", "hook", "fake", "turn-end", "--json")
+	got := decode[struct {
+		Pending []message `json:"pending"`
+	}](t, out)
+	if len(got.Pending) != 1 {
+		t.Fatalf("turn-end --json pending = %+v, want one message", got.Pending)
+	}
+	want := "[recado] from asker · message (id " + short + ")\none\ntwo"
+	if got.Pending[0].Text != want {
+		t.Errorf("pending text = %q, want %q", got.Pending[0].Text, want)
+	}
+}
+
+// lineWith returns the output line mentioning part.
+func lineWith(out, part string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, part) {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestSkillManagesThePiExtension(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := &app{Root: filepath.Join(t.TempDir(), "state"), Harnesses: harness.Set{&harness.Pi{Home: home}}}
+	shimPath := filepath.Join(home, ".pi", "agent", "extensions", "recado.ts")
+
+	if out := mustExec(t, a, "", "skill", "setup"); !strings.Contains(lineWith(out, shimPath), "installed") {
+		t.Errorf("skill setup = %q, want the Pi extension installed", out)
+	}
+	data, err := os.ReadFile(shimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), `// recado-shim: "1"`+"\n") {
+		t.Errorf("the installed extension is not version-stamped: %q", string(data[:40]))
+	}
+	if out := mustExec(t, a, "", "skill", "status"); !strings.Contains(lineWith(out, shimPath), "current") {
+		t.Errorf("skill status = %q, want the Pi extension current", out)
+	}
+
+	if out := mustExec(t, a, "", "skill", "remove"); !strings.Contains(lineWith(out, shimPath), "removed") {
+		t.Errorf("skill remove = %q, want the Pi extension removed", out)
+	}
+	if _, err := os.Stat(shimPath); !os.IsNotExist(err) {
+		t.Errorf("the Pi extension is still there: %v", err)
+	}
+	if out := mustExec(t, a, "", "skill", "status"); !strings.Contains(lineWith(out, shimPath), "missing") {
+		t.Errorf("skill status = %q, want the Pi extension missing", out)
+	}
+}
+
+func TestSkillLeavesAForeignPiExtensionAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := &app{Root: filepath.Join(t.TempDir(), "state"), Harnesses: harness.Set{&harness.Pi{Home: home}}}
+	shimPath := filepath.Join(home, ".pi", "agent", "extensions", "recado.ts")
+	if err := os.MkdirAll(filepath.Dir(shimPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	foreign := "export default function () { /* mine */ }\n"
+	if err := os.WriteFile(shimPath, []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := exec(t, a, "", "skill", "setup"); err == nil {
+		t.Fatal("skill setup overwrote an extension recado did not install")
+	}
+	if _, err := exec(t, a, "", "skill", "remove"); err == nil {
+		t.Fatal("skill remove deleted an extension recado did not install")
+	}
+	if got, err := os.ReadFile(shimPath); err != nil || string(got) != foreign {
+		t.Errorf("the foreign extension changed: %q, %v", string(got), err)
 	}
 }
