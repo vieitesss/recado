@@ -118,7 +118,7 @@ For launchers, scripts and the TUI, not documented in the agent guide:
 | `recado machine add NAME KIND TARGET`, `rm`, `ls` | manages the machine registry |
 | `recado hook HARNESS EVENT` | called by harness shims |
 | `recado relay MACHINE`, `recado outbox` | cross-machine plumbing |
-| `recado skill [setup\|status\|uninstall]` | installs the skill stub and harness shims |
+| `recado skill [setup\|status\|remove]` | installs the skill stub and harness shims |
 
 Every command takes `--json`. Exit codes: `0` success, `1` failure, `2` usage
 error or unknown address.
