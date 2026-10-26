@@ -177,6 +177,17 @@ so it is never delivered twice. States: `stored → queued → read`; `read` is
 recorded when the harness reports the turn started, where it can. States are
 for the TUI and debugging; senders never see them.
 
+One per-recipient delivery lock covers the whole step: reading the recipient's
+state, claiming and pushing. A push goes out only behind any older stored
+messages, never overtaking them. The turn-start/turn-end hooks take the same
+lock around recording `busy`/`idle`, so a delivery cannot slip across a turn
+boundary, and a turn end that finds a backlog drains it before an idle agent
+can be left with stored mail. A claim that fails partway records nothing and
+leaves the messages `stored`; a push that fails releases only the messages it
+did not hand over. Neither can strand a message. The delivery layer renders
+the text (with the recipient's short id) and hands the adapter an
+`Outgoing{Envelope, Text}`; adapters never read the store.
+
 ## Harness adapters
 
 Each receiving harness needs explicit support: there is no standard for
@@ -186,11 +197,16 @@ with a version stamp. Sending needs nothing per harness: it is a shell
 command.
 
 ```go
+type Outgoing struct {
+	Envelope Envelope // the message
+	Text     string   // rendered with the recipient's short id
+}
+
 type Harness interface {
 	Name() string
 	Detect(env []string) (agentID string, ok bool) // running inside this harness?
 	QueuesWhileBusy() bool                          // safe to push mid-turn?
-	Push(agent Agent, msgs []Envelope) error        // hand over as new turns
+	Push(agent Agent, msg Outgoing) error           // hand over as a new turn
 	Shims() []Shim                                  // files `skill setup` installs
 	Check() error                                   // version and install health
 }

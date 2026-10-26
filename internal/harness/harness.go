@@ -8,6 +8,14 @@ import (
 	"github.com/vieitesss/recado/internal/store"
 )
 
+// Outgoing is one message the delivery layer hands to a harness: the envelope
+// itself and the text the agent reads, rendered with the recipient's own short
+// id. The delivery layer renders, so an adapter never reads the store.
+type Outgoing struct {
+	Envelope envelope.Envelope
+	Text     string
+}
+
 // Harness delivers messages into one kind of agent harness: it holds the only
 // per-harness delivery logic, and each harness adds a thin shim that calls
 // `recado hook <name> ...`.
@@ -17,8 +25,8 @@ type Harness interface {
 	Detect(env []string) (agentID string, ok bool)
 	// QueuesWhileBusy reports whether Push may run mid-turn.
 	QueuesWhileBusy() bool
-	// Push hands msgs to the agent as new user turns.
-	Push(agent store.Agent, msgs []envelope.Envelope) error
+	// Push hands one message to the agent as a new user turn.
+	Push(agent store.Agent, msg Outgoing) error
 	// Shims are the files `recado skill setup` installs for this harness.
 	Shims() []Shim
 	// Check reports version and install health.

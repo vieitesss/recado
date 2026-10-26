@@ -31,7 +31,9 @@ type Result struct {
 }
 
 // Deliver stores env and, when the recipient is live and its harness can take
-// the message now, claims and pushes it.
+// messages now, hands it over behind any older stored messages, in order.
+// Everything from reading the recipient's state to the push happens under the
+// recipient's delivery lock, so a turn boundary cannot interleave.
 func (s *Service) Deliver(env envelope.Envelope) (Result, error) {
 	from, err := addr.Parse(env.From)
 	if err != nil {
@@ -44,14 +46,29 @@ func (s *Service) Deliver(env envelope.Envelope) (Result, error) {
 	if !from.IsLocal() || !to.IsLocal() {
 		return Result{}, fmt.Errorf("%w: %s -> %s", ErrRemote, from, to)
 	}
-	agent, err := s.Store.Lookup(to.Agent)
+	// Reject an unknown recipient before touching its mailbox; deliver reads
+	// it again under the lock.
+	if _, err := s.Store.Lookup(to.Agent); err != nil {
+		return Result{}, err
+	}
+	release, err := s.Store.LockDelivery(to.Agent)
 	if err != nil {
 		return Result{}, err
 	}
-	if err := s.Store.Append(to.Agent, env); err != nil {
+	defer release()
+	return s.deliver(env, to.Agent)
+}
+
+// deliver runs one delivery with the recipient's delivery lock held.
+func (s *Service) deliver(env envelope.Envelope, id string) (Result, error) {
+	agent, err := s.Store.Lookup(id)
+	if err != nil {
 		return Result{}, err
 	}
-	short, err := s.Store.ShortID(to.Agent, env.ID)
+	if err := s.Store.Append(id, env); err != nil {
+		return Result{}, err
+	}
+	short, err := s.Store.ShortID(id, env.ID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -67,24 +84,60 @@ func (s *Service) Deliver(env envelope.Envelope) (Result, error) {
 		return res, nil
 	}
 
-	msg, claimed, err := s.Store.Claim(to.Agent, env.ID)
+	// Claim every stored message, so an older backlog goes out first: a newer
+	// message never overtakes one that was already waiting.
+	claimed, err := s.Store.ClaimPending(id)
+	if err != nil {
+		// The envelope is stored and the failed claim recorded nothing, so a
+		// later drain owns delivery. send still returns once stored.
+		return res, nil
+	}
+	pushed, rest := s.push(agent, h, claimed)
+	if err := releaseMessages(s.Store, id, rest); err != nil {
+		return Result{}, err
+	}
+	for _, msg := range pushed {
+		if msg.Envelope.ID == env.ID {
+			res.Pushed = true
+			res.Message.State = store.StateQueued
+			return res, nil
+		}
+	}
+	// A concurrent claim (a drain or inbox) already owns the envelope.
+	msg, err := s.Store.Resolve(id, env.ID)
 	if err != nil {
 		return Result{}, err
 	}
-	if !claimed { // a concurrent drain took it; it owns delivery now
-		res.Message = msg
-		return res, nil
-	}
-	if err := h.Push(agent, []envelope.Envelope{env}); err != nil {
-		// The message stays durable: the shim's drain retries it.
-		if rerr := s.Store.Release(to.Agent, env.ID); rerr != nil {
-			return Result{}, rerr
-		}
-		return res, nil
-	}
-	res.Message.State = store.StateQueued
-	res.Pushed = true
+	res.Message = msg
 	return res, nil
+}
+
+// push hands msgs to h in order, one turn per message, and stops at the first
+// failure. It returns the messages handed over and the ones still claimed.
+func (s *Service) push(agent store.Agent, h harness.Harness, msgs []store.Message) (pushed, rest []store.Message) {
+	for i, msg := range msgs {
+		text, err := s.Store.Render(agent.ID, msg.Envelope)
+		if err != nil {
+			return pushed, msgs[i:]
+		}
+		if err := h.Push(agent, harness.Outgoing{Envelope: msg.Envelope, Text: text}); err != nil {
+			return pushed, msgs[i:]
+		}
+		pushed = append(pushed, msg)
+	}
+	return pushed, nil
+}
+
+// releaseMessages returns claimed messages to stored, so a later drain retries
+// them.
+func releaseMessages(st *store.Store, id string, msgs []store.Message) error {
+	var first error
+	for _, msg := range msgs {
+		if err := st.Release(id, msg.Envelope.ID); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // Reply answers the message query in from's mailbox. The answer goes to that
@@ -121,6 +174,16 @@ type Drained struct {
 // allowed to push even when the recorded state is not idle. Whatever could not
 // be pushed is returned claimed, for the calling shim to deliver itself.
 func (s *Service) Drain(id string) (Drained, error) {
+	release, err := s.Store.LockDelivery(id)
+	if err != nil {
+		return Drained{}, err
+	}
+	defer release()
+	return s.drain(id)
+}
+
+// drain runs one drain with the recipient's delivery lock held.
+func (s *Service) drain(id string) (Drained, error) {
 	agent, err := s.Store.Lookup(id)
 	if err != nil {
 		return Drained{}, err
@@ -133,12 +196,35 @@ func (s *Service) Drain(id string) (Drained, error) {
 	if !ok || !agent.Live() {
 		return Drained{Pending: msgs}, nil
 	}
-	envs := make([]envelope.Envelope, len(msgs))
-	for i, m := range msgs {
-		envs[i] = m.Envelope
+	pushed, rest := s.push(agent, h, msgs)
+	return Drained{Pushed: pushed, Pending: rest}, nil
+}
+
+// TurnStart records that the harness started a turn: the agent is busy and
+// the messages handed over for this turn are read. It waits for an in-flight
+// delivery, so a non-queueing harness is never pushed to after this returns.
+func (s *Service) TurnStart(id string) error {
+	release, err := s.Store.LockDelivery(id)
+	if err != nil {
+		return err
 	}
-	if err := h.Push(agent, envs); err != nil {
-		return Drained{Pending: msgs}, nil
+	defer release()
+	if err := s.Store.SetState(id, store.AgentBusy); err != nil {
+		return err
 	}
-	return Drained{Pushed: msgs}, nil
+	return s.Store.MarkQueuedRead(id)
+}
+
+// TurnEnd records the agent idle and drains its mailbox under one lock, so a
+// send cannot slip between publishing idle and draining the backlog.
+func (s *Service) TurnEnd(id string) (Drained, error) {
+	release, err := s.Store.LockDelivery(id)
+	if err != nil {
+		return Drained{}, err
+	}
+	defer release()
+	if err := s.Store.SetState(id, store.AgentIdle); err != nil {
+		return Drained{}, err
+	}
+	return s.drain(id)
 }

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/vieitesss/recado/internal/addr"
-	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/skill"
 	"github.com/vieitesss/recado/internal/store"
 )
@@ -129,15 +128,11 @@ func Extension() []byte {
 	return []byte(`// recado-shim: "` + shimVersion + `"` + "\n" + piExtension)
 }
 
-// Push writes one JSON line per message to the socket the Pi extension
-// listens on, with the text the agent should read.
-func (p *Pi) Push(agent store.Agent, msgs []envelope.Envelope) error {
+// Push writes one JSON line to the socket the Pi extension listens on, with
+// the text the agent should read.
+func (p *Pi) Push(agent store.Agent, msg Outgoing) error {
 	if agent.Endpoint == "" {
 		return errors.New("pi: the registry entry has no socket endpoint")
-	}
-	st, err := p.store()
-	if err != nil {
-		return err
 	}
 	conn, err := net.DialTimeout("unix", agent.Endpoint, piTimeout)
 	if err != nil {
@@ -147,18 +142,12 @@ func (p *Pi) Push(agent store.Agent, msgs []envelope.Envelope) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(piTimeout)); err != nil {
 		return err
 	}
-	for _, msg := range msgs {
-		text, err := st.Render(agent.ID, msg)
-		if err != nil {
-			return err
-		}
-		line, err := json.Marshal(followUp{Text: text})
-		if err != nil {
-			return err
-		}
-		if _, err := conn.Write(append(line, '\n')); err != nil {
-			return fmt.Errorf("pi: write %s: %w", agent.Endpoint, err)
-		}
+	line, err := json.Marshal(followUp{Text: msg.Text})
+	if err != nil {
+		return err
+	}
+	if _, err := conn.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("pi: write %s: %w", agent.Endpoint, err)
 	}
 	return nil
 }
@@ -216,13 +205,4 @@ func lookupEnv(env []string, name string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// store is where pushed messages find their short id.
-func (p *Pi) store() (*store.Store, error) {
-	root, err := store.DefaultRoot()
-	if err != nil {
-		return nil, err
-	}
-	return store.Open(root)
 }

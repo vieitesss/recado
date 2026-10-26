@@ -9,7 +9,6 @@ import (
 
 	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/deliver"
-	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/harness"
 	"github.com/vieitesss/recado/internal/store"
 )
@@ -54,18 +53,18 @@ those messages as user turns.`,
 				if err := a.ensureAgent(st, h, id); err != nil {
 					return err
 				}
-				if err := st.SetState(id, store.AgentBusy); err != nil {
-					return err
-				}
-				return st.MarkQueuedRead(id)
+				svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
+				return svc.TurnStart(id)
 			case "turn-end":
 				if err := a.ensureAgent(st, h, id); err != nil {
 					return err
 				}
-				if err := st.SetState(id, store.AgentIdle); err != nil {
+				svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
+				drained, err := svc.TurnEnd(id)
+				if err != nil {
 					return err
 				}
-				return a.drain(cmd, st, id)
+				return a.reportDrained(cmd, st, id, drained)
 			default:
 				return usagef("unknown hook event %q: want session-start, turn-start or turn-end", args[1])
 			}
@@ -118,39 +117,61 @@ func (a *app) drain(cmd *cobra.Command, st *store.Store, id string) error {
 	if err != nil {
 		return err
 	}
-	pushed := make([]string, 0, len(drained.Pushed))
-	for _, msg := range drained.Pushed {
-		short, err := st.ShortID(id, msg.Envelope.ID)
-		if err != nil {
-			return err
-		}
-		pushed = append(pushed, short)
-	}
+	return a.reportDrained(cmd, st, id, drained)
+}
+
+// reportDrained prints what the shim must deliver itself. If the output fails,
+// nothing reliable reached the shim: release every claimed message, so a later
+// drain or session start can still deliver it.
+func (a *app) reportDrained(cmd *cobra.Command, st *store.Store, id string, drained deliver.Drained) error {
 	pending := make([]message, 0, len(drained.Pending))
 	for _, msg := range drained.Pending {
 		view, err := a.message(st, id, msg)
 		if err != nil {
+			a.releaseDrained(st, id, drained.Pending)
 			return err
 		}
 		pending = append(pending, view)
 	}
+	pushed := make([]string, 0, len(drained.Pushed))
+	for _, msg := range drained.Pushed {
+		short, err := st.ShortID(id, msg.Envelope.ID)
+		if err != nil {
+			a.releaseDrained(st, id, drained.Pending)
+			return err
+		}
+		pushed = append(pushed, short)
+	}
 
 	if jsonFlag(cmd) {
-		return printJSON(cmd, struct {
+		err := printJSON(cmd, struct {
 			Pushed  []string  `json:"pushed"`
 			Pending []message `json:"pending"`
 		}{pushed, pending})
+		if err != nil {
+			a.releaseDrained(st, id, drained.Pending)
+		}
+		return err
 	}
 	w := cmd.OutOrStdout()
 	for i, msg := range pending {
 		if i > 0 {
 			if _, err := fmt.Fprintln(w); err != nil {
+				a.releaseDrained(st, id, drained.Pending)
 				return err
 			}
 		}
-		if _, err := fmt.Fprintln(w, envelope.Render(msg.Envelope, msg.Short)); err != nil {
+		if _, err := fmt.Fprintln(w, msg.Text); err != nil {
+			a.releaseDrained(st, id, drained.Pending)
 			return err
 		}
 	}
 	return nil
+}
+
+// releaseDrained returns a failed hook's claimed messages to stored.
+func (a *app) releaseDrained(st *store.Store, id string, msgs []store.Message) {
+	for _, msg := range msgs {
+		_ = st.Release(id, msg.Envelope.ID)
+	}
 }

@@ -1,22 +1,28 @@
 package harness
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/store"
 )
 
-// Fake is a Harness for tests only: it appends every pushed envelope to
+// Fake is a Harness for tests only: it appends every pushed message to
 // <Dir>/pushes.jsonl, so a test can assert what was handed to the agent.
 type Fake struct {
-	Dir   string // where pushes.jsonl lives
-	Queue bool   // report that the harness queues while busy
-	Fail  bool   // reject every push
+	Dir       string // where pushes.jsonl lives
+	Queue     bool   // report that the harness queues while busy
+	Fail      bool   // reject every push
+	FailAfter int    // reject the push call with this 1-based number and every later one
+
+	mu    sync.Mutex
+	calls int
 }
 
 func (f *Fake) Name() string { return "fake" }
@@ -34,8 +40,11 @@ func (f *Fake) Detect(env []string) (string, bool) {
 
 func (f *Fake) QueuesWhileBusy() bool { return f.Queue }
 
-func (f *Fake) Push(_ store.Agent, msgs []envelope.Envelope) error {
-	if f.Fail {
+func (f *Fake) Push(_ store.Agent, msg Outgoing) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.Fail || (f.FailAfter > 0 && f.calls >= f.FailAfter) {
 		return errors.New("fake harness rejected the push")
 	}
 	if f.Dir == "" {
@@ -49,16 +58,12 @@ func (f *Fake) Push(_ store.Agent, msgs []envelope.Envelope) error {
 		return err
 	}
 	defer file.Close()
-	for _, msg := range msgs {
-		line, err := msg.Line()
-		if err != nil {
-			return err
-		}
-		if _, err := file.Write(line); err != nil {
-			return err
-		}
+	line, err := json.Marshal(pushed(msg))
+	if err != nil {
+		return err
 	}
-	return nil
+	_, err = file.Write(append(line, '\n'))
+	return err
 }
 
 func (f *Fake) Shims() []Shim { return nil }
@@ -68,25 +73,44 @@ func (f *Fake) Check() error { return nil }
 // PushesPath is where the fake records pushes.
 func (f *Fake) PushesPath() string { return filepath.Join(f.Dir, "pushes.jsonl") }
 
+// pushed is one line of pushes.jsonl: the envelope and the text the harness
+// was asked to hand the agent.
+type pushed struct {
+	Envelope envelope.Envelope `json:"envelope"`
+	Text     string            `json:"text"`
+}
+
 // Pushes returns the envelopes the fake was asked to hand over.
 func (f *Fake) Pushes() ([]envelope.Envelope, error) {
+	var out []envelope.Envelope
+	err := f.each(func(p pushed) { out = append(out, p.Envelope) })
+	return out, err
+}
+
+// Texts returns the rendered text of each push, in order.
+func (f *Fake) Texts() ([]string, error) {
+	var out []string
+	err := f.each(func(p pushed) { out = append(out, p.Text) })
+	return out, err
+}
+
+func (f *Fake) each(visit func(pushed)) error {
 	data, err := os.ReadFile(f.PushesPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var out []envelope.Envelope
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if line == "" {
 			continue
 		}
-		env, err := envelope.Decode([]byte(line))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f.PushesPath(), err)
+		var p pushed
+		if err := json.Unmarshal([]byte(line), &p); err != nil {
+			return fmt.Errorf("%s: %w", f.PushesPath(), err)
 		}
-		out = append(out, env)
+		visit(p)
 	}
-	return out, nil
+	return nil
 }

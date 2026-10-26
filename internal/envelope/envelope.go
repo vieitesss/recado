@@ -100,7 +100,7 @@ func Decode(line []byte) (Envelope, error) {
 	if wire.V != Version {
 		return Envelope{}, fmt.Errorf("envelope: version %d, this recado speaks %d", wire.V, Version)
 	}
-	id, err := ulid.Parse(wire.ID)
+	id, err := ulid.ParseStrict(wire.ID)
 	if err != nil {
 		return Envelope{}, fmt.Errorf("envelope: id %q: %w", wire.ID, err)
 	}
@@ -131,7 +131,7 @@ func Decode(line []byte) (Envelope, error) {
 		env.Kind = KindMessage
 	}
 	if env.ReplyTo != "" {
-		reply, err := ulid.Parse(env.ReplyTo)
+		reply, err := ulid.ParseStrict(env.ReplyTo)
 		if err != nil {
 			return Envelope{}, fmt.Errorf("envelope: reply_to %q: %w", env.ReplyTo, err)
 		}

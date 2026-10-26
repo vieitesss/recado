@@ -389,3 +389,257 @@ func TestReplyToUnknownID(t *testing.T) {
 		t.Errorf("Reply(unknown id) error = %v, want store.ErrUnknownID", err)
 	}
 }
+
+func TestDeliverPushesOlderStoredMessagesFirst(t *testing.T) {
+	f := setup(t, false) // this harness cannot queue mid-turn
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	older := f.env(t, "asker", "worker", envelope.KindMessage, "older", nil)
+	if err := f.st.Append("worker", older); err != nil {
+		t.Fatal(err)
+	}
+	// The agent is idle now, but an older message is still stored.
+	if err := f.st.SetState("worker", store.AgentIdle); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "newer", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Pushed {
+		t.Fatal("the new message was not pushed to the idle agent")
+	}
+	pushes, err := f.fake.Pushes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pushes) != 2 || pushes[0].Body != "older" || pushes[1].Body != "newer" {
+		t.Fatalf("pushed = %+v, want the stored backlog first, oldest first", pushes)
+	}
+	for _, m := range []envelope.Envelope{older, res.Message.Envelope} {
+		if got := f.state(t, "worker", m.ID); got != store.StateQueued {
+			t.Errorf("%s state = %q, want %q", m.ID, got, store.StateQueued)
+		}
+	}
+}
+
+// gatedHarness is a Fake whose Push blocks until release, so a test can hold a
+// delivery in flight. failFirst rejects the first push after release.
+type gatedHarness struct {
+	harness.Fake
+	started   chan struct{}
+	release   chan struct{}
+	failFirst bool
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (g *gatedHarness) Push(agent store.Agent, msg harness.Outgoing) error {
+	g.mu.Lock()
+	g.calls++
+	call := g.calls
+	g.mu.Unlock()
+	select {
+	case g.started <- struct{}{}:
+	default:
+	}
+	<-g.release
+	if g.failFirst && call == 1 {
+		return errors.New("push rejected")
+	}
+	return g.Fake.Push(agent, msg)
+}
+
+func TestTurnEndWaitsForInFlightFailedPush(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &gatedHarness{
+		Fake:      harness.Fake{Dir: t.TempDir()},
+		started:   make(chan struct{}, 1),
+		release:   make(chan struct{}),
+		failFirst: true,
+	}
+	f := &fixture{svc: &Service{Store: st, Harnesses: harness.Set{h}}, st: st}
+	f.register(t, "worker", os.Getpid(), store.AgentIdle)
+
+	delivered := make(chan error, 1)
+	go func() {
+		_, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "wake", nil))
+		delivered <- err
+	}()
+	<-h.started
+
+	type result struct {
+		drained Drained
+		err     error
+	}
+	turnEnd := make(chan result, 1)
+	go func() {
+		d, err := f.svc.TurnEnd("worker")
+		turnEnd <- result{d, err}
+	}()
+
+	select {
+	case got := <-turnEnd:
+		// The turn end ran while the failed push was still in flight: the
+		// agent goes idle with the message stranded in stored.
+		close(h.release)
+		if err := <-delivered; err != nil {
+			t.Fatal(err)
+		}
+		if len(got.drained.Pushed)+len(got.drained.Pending) != 1 {
+			t.Fatalf("the turn-end drain delivered %d messages, want the one released by the failed push", len(got.drained.Pushed)+len(got.drained.Pending))
+		}
+	case <-time.After(200 * time.Millisecond):
+		// The turn end waited for the delivery, so it sees the released message.
+		close(h.release)
+		if err := <-delivered; err != nil {
+			t.Fatal(err)
+		}
+		got := <-turnEnd
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if len(got.drained.Pushed) != 1 || len(got.drained.Pending) != 0 {
+			t.Fatalf("turn-end drain = %d pushed, %d pending; want the failed push retried", len(got.drained.Pushed), len(got.drained.Pending))
+		}
+	}
+}
+
+// queueGate is a harness whose QueuesWhileBusy blocks, so a test can hold a
+// delivery between reading the recipient's state and pushing.
+type queueGate struct {
+	harness.Fake
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (g *queueGate) QueuesWhileBusy() bool {
+	close(g.entered)
+	<-g.resume
+	return g.Fake.Queue
+}
+
+func TestTurnStartWaitsForInFlightDelivery(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &queueGate{
+		Fake:    harness.Fake{Dir: t.TempDir()},
+		entered: make(chan struct{}),
+		resume:  make(chan struct{}),
+	}
+	f := &fixture{svc: &Service{Store: st, Harnesses: harness.Set{h}}, st: st}
+	f.register(t, "worker", os.Getpid(), store.AgentIdle)
+
+	delivered := make(chan error, 1)
+	go func() {
+		_, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "mid-turn", nil))
+		delivered <- err
+	}()
+	<-h.entered
+
+	turnDone := make(chan error, 1)
+	go func() { turnDone <- f.svc.TurnStart("worker") }()
+
+	select {
+	case err := <-turnDone:
+		// The old code recorded busy while the delivery was still deciding,
+		// then pushed to a harness that cannot take messages mid-turn.
+		if err != nil {
+			t.Fatal(err)
+		}
+		close(h.resume)
+		if err := <-delivered; err != nil {
+			t.Fatal(err)
+		}
+		if pushes, err := h.Pushes(); err != nil || len(pushes) != 0 {
+			t.Fatalf("pushes = %d, %v; a non-queueing harness was pushed to after turn-start recorded busy", len(pushes), err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		// The turn start waited for the delivery to finish, which is ordered
+		// before the turn; releasing the gate lets the push complete.
+		close(h.resume)
+		if err := <-delivered; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-turnDone; err != nil {
+			t.Fatal(err)
+		}
+		if pushes, err := h.Pushes(); err != nil || len(pushes) != 1 {
+			t.Fatalf("pushes = %d, %v; want the delivery completed before the turn was recorded", len(pushes), err)
+		}
+	}
+}
+
+func TestDeliverRendersTheMessageForTheRecipient(t *testing.T) {
+	f := setup(t, false)
+	f.register(t, "worker", os.Getpid(), store.AgentIdle)
+	env := f.env(t, "asker", "worker", envelope.KindQuestion, "which branch?", map[string]string{"item": "login"})
+	env.ID = "01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7"
+	if _, err := f.svc.Deliver(env); err != nil {
+		t.Fatal(err)
+	}
+	texts, err := f.fake.Texts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[recado] from asker · question · item=login (id v6t7)\n" +
+		"which branch?\n" +
+		"reply with: recado reply v6t7 \"…\""
+	if len(texts) != 1 || texts[0] != want {
+		t.Fatalf("harness got %q, want the message rendered with the recipient's short id:\n%s", texts, want)
+	}
+}
+
+func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
+	f := setup(t, false)
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	for _, body := range []string{"first", "second"} {
+		if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.fake.FailAfter = 2 // the first message is written, the second is rejected
+
+	drained, err := f.svc.Drain("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drained.Pushed) != 1 || len(drained.Pending) != 1 {
+		t.Fatalf("Drain = %d pushed, %d pending; want only the second message left over", len(drained.Pushed), len(drained.Pending))
+	}
+	pushes, err := f.fake.Pushes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pushes) != 1 || pushes[0].Body != "first" {
+		t.Fatalf("pushes = %+v, want only the first message", pushes)
+	}
+
+	// The shim could not deliver the pending one either: the next drain hands
+	// over only that one, never the already-pushed prefix again.
+	second := drained.Pending[0].Envelope.ID
+	if err := f.st.Release("worker", second); err != nil {
+		t.Fatal(err)
+	}
+	f.fake.FailAfter = 0
+	again, err := f.svc.Drain("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Pushed) != 1 || again.Pushed[0].Envelope.ID != second {
+		t.Fatalf("second Drain = %+v, want only the second message", again.Pushed)
+	}
+	pushes, err = f.fake.Pushes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pushes) != 2 || pushes[0].Body != "first" || pushes[1].Body != "second" {
+		t.Fatalf("pushes = %+v, want first then second with no duplicate", pushes)
+	}
+}

@@ -106,6 +106,9 @@ func TestDecodeRejectsBadEnvelopes(t *testing.T) {
 		"bad to":       `{"v":1,"id":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7","ts":"2026-10-26T10:00:00.123Z","from":"a","to":""}`,
 		"no recipient": `{"v":1,"id":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7","ts":"2026-10-26T10:00:00.123Z","from":"a"}`,
 		"bad reply_to": `{"v":1,"id":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7","ts":"2026-10-26T10:00:00.123Z","from":"a","to":"b","reply_to":"7k2q"}`,
+		// Non-strict ULID parsing maps '!' to 31, silently rewriting the id.
+		"non-canonical id":       `{"v":1,"id":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T!","ts":"2026-10-26T10:00:00.123Z","from":"a","to":"b"}`,
+		"non-canonical reply_to": `{"v":1,"id":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7","ts":"2026-10-26T10:00:00.123Z","from":"a","to":"b","reply_to":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T!"}`,
 	}
 	for name, raw := range bad {
 		if _, err := Decode([]byte(raw)); err == nil {

@@ -443,6 +443,41 @@ func TestTurnEndJSONCarriesTheTextTheShimDelivers(t *testing.T) {
 	}
 }
 
+// brokenWriter rejects every write, like a closed stdout.
+type brokenWriter struct{ err error }
+
+func (w brokenWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestDrainReleasesMessagesWhenItsOutputFails(t *testing.T) {
+	a, fake := newTestApp(t, false)
+	startSession(t, a, "worker")
+	t.Setenv("RECADO_ADDR", "asker")
+	short := strings.TrimSpace(mustExec(t, a, "", "send", "worker", "one"))
+	fake.Fail = true // the drain must leave the message for the shim's output
+	t.Setenv("RECADO_ADDR", "worker")
+
+	root := newRootCmd(a)
+	root.SetOut(brokenWriter{errors.New("stdout closed")})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"hook", "fake", "turn-end", "--json"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("hook succeeded though its output failed")
+	}
+	if got := strings.TrimSpace(mustExec(t, a, "", "status", short)); got != short+" stored" {
+		t.Fatalf("after the failed output the message is %q, want it stored for a later drain", got)
+	}
+
+	fake.Fail = false
+	mustExec(t, a, "", "hook", "fake", "turn-end")
+	if got := strings.TrimSpace(mustExec(t, a, "", "status", short)); got != short+" queued" {
+		t.Fatalf("the next drain left the message %q, want it queued to the agent", got)
+	}
+	pushes, err := fake.Pushes()
+	if err != nil || len(pushes) != 1 {
+		t.Fatalf("pushes = %d, %v; want the message handed over exactly once", len(pushes), err)
+	}
+}
+
 // lineWith returns the output line mentioning part.
 func lineWith(out, part string) string {
 	for _, line := range strings.Split(out, "\n") {

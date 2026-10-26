@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vieitesss/recado/internal/addr"
-	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/store"
 )
 
@@ -48,30 +46,6 @@ func collect(t *testing.T, sock string) <-chan []string {
 	return lines
 }
 
-// mailbox is a store with one registered Pi agent, plus the asker address.
-func mailbox(t *testing.T, id string) (*store.Store, addr.Address) {
-	t.Helper()
-	root := t.TempDir()
-	t.Setenv("RECADO_STATE_DIR", root)
-	st, err := store.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Register(store.Agent{ID: id, Harness: "pi"}); err != nil {
-		t.Fatal(err)
-	}
-	return st, addr.Local("asker")
-}
-
-func mustShort(t *testing.T, st *store.Store, id, msgID string) string {
-	t.Helper()
-	short, err := st.ShortID(id, msgID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return short
-}
-
 // onlyText decodes one socket line and reports the text it carries.
 func onlyText(t *testing.T, line string) string {
 	t.Helper()
@@ -89,86 +63,34 @@ func onlyText(t *testing.T, line string) string {
 	return text
 }
 
-func TestPiPushSendsOneRenderedMessagePerLine(t *testing.T) {
-	st, asker := mailbox(t, "worker")
-	question, err := envelope.New(asker, addr.Local("worker"), envelope.KindQuestion, "which branch?", map[string]string{"item": "login"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	note, err := envelope.New(asker, addr.Local("worker"), envelope.KindMessage, "line one\nline two", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, env := range []envelope.Envelope{question, note} {
-		if err := st.Append("worker", env); err != nil {
-			t.Fatal(err)
-		}
-	}
-
+func TestPiPushWritesTheTextItIsGiven(t *testing.T) {
 	sock := filepath.Join(socketDir(t), "pi.sock")
 	lines := collect(t, sock)
 	agent := store.Agent{ID: "worker", Harness: "pi", Endpoint: sock}
-	if err := (&Pi{}).Push(agent, []envelope.Envelope{question, note}); err != nil {
+	want := "[recado] from asker · message (id v6t7)\nline one\nline two"
+	if err := (&Pi{}).Push(agent, Outgoing{Text: want}); err != nil {
 		t.Fatal(err)
 	}
 
-	q, n := mustShort(t, st, "worker", question.ID), mustShort(t, st, "worker", note.ID)
-	for _, short := range []string{q, n} {
-		if len(short) < 4 {
-			t.Errorf("short id %q is under four characters", short)
-		}
-	}
-	// The wire text is exactly what the agent reads in its timeline.
-	want := []string{
-		"[recado] from asker · question · item=login (id " + q + ")\n" +
-			"which branch?\n" +
-			"reply with: recado reply " + q + " \"…\"",
-		"[recado] from asker · message (id " + n + ")\n" +
-			"line one\nline two",
-	}
 	got := <-lines
-	if len(got) != len(want) {
-		t.Fatalf("socket received %d lines, want %d: %q", len(got), len(want), got)
+	if len(got) != 1 {
+		t.Fatalf("socket received %d lines, want one per push: %q", len(got), got)
 	}
-	for i, line := range got {
-		if text := onlyText(t, line); text != want[i] {
-			t.Errorf("message %d text =\n%s\nwant\n%s", i, text, want[i])
-		}
+	if text := onlyText(t, got[0]); text != want {
+		t.Errorf("socket text =\n%s\nwant\n%s", text, want)
 	}
 }
 
 func TestPiPushFailsInsteadOfDropping(t *testing.T) {
-	cases := []struct {
-		name   string
-		agent  store.Agent
-		envs   []envelope.Envelope
-		errHas string
-	}{
-		{name: "no endpoint", agent: store.Agent{ID: "worker", Harness: "pi"}, errHas: "endpoint"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if err := (&Pi{}).Push(c.agent, c.envs); err == nil || !strings.Contains(err.Error(), c.errHas) {
-				t.Fatalf("Push = %v, want an error mentioning %q", err, c.errHas)
-			}
-		})
+	if err := (&Pi{}).Push(store.Agent{ID: "worker", Harness: "pi"}, Outgoing{Text: "hi"}); err == nil || !strings.Contains(err.Error(), "endpoint") {
+		t.Fatalf("Push without an endpoint = %v, want an error mentioning the endpoint", err)
 	}
 
-	t.Run("dead socket", func(t *testing.T) {
-		st, asker := mailbox(t, "worker")
-		env, err := envelope.New(asker, addr.Local("worker"), envelope.KindMessage, "hi", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := st.Append("worker", env); err != nil {
-			t.Fatal(err)
-		}
-		sock := filepath.Join(socketDir(t), "gone.sock")
-		agent := store.Agent{ID: "worker", Harness: "pi", Endpoint: sock}
-		if err := (&Pi{}).Push(agent, []envelope.Envelope{env}); err == nil {
-			t.Fatal("Push to a socket nobody listens on succeeded")
-		}
-	})
+	sock := filepath.Join(socketDir(t), "gone.sock")
+	agent := store.Agent{ID: "worker", Harness: "pi", Endpoint: sock}
+	if err := (&Pi{}).Push(agent, Outgoing{Text: "hi"}); err == nil {
+		t.Fatal("Push to a socket nobody listens on succeeded")
+	}
 }
 
 func TestPiDetect(t *testing.T) {

@@ -115,6 +115,9 @@ func (s *Store) Append(id string, env envelope.Envelope) error {
 			return nil
 		}
 	}
+	if err := trimTail(f); err != nil {
+		return err
+	}
 	if _, err := f.Write(line); err != nil {
 		return err
 	}
@@ -238,15 +241,18 @@ func (s *Store) ClaimPending(id string) ([]Message, error) {
 		return nil, err
 	}
 	var claimed []Message
+	var receipts []receipt
+	ts := envelope.FormatTime(time.Now())
 	for _, msg := range msgs {
 		if msg.State != StateStored {
 			continue
 		}
-		if err := s.appendReceipt(id, msg.Envelope.ID, StateQueued); err != nil {
-			return nil, err
-		}
+		receipts = append(receipts, receipt{ID: msg.Envelope.ID, State: StateQueued, TS: ts})
 		msg.State = StateQueued
 		claimed = append(claimed, msg)
+	}
+	if err := s.appendReceipts(id, receipts); err != nil {
+		return nil, err
 	}
 	return claimed, nil
 }
@@ -349,16 +355,11 @@ func resolve(msgs []Message, query string) (Message, error) {
 // lockMailbox opens id's inbox (creating the mailbox) and takes the mailbox
 // lock: every read and write of the mailbox goes through it.
 func (s *Store) lockMailbox(id string, how int) (*os.File, error) {
-	if !addr.ValidID(id) {
-		return nil, fmt.Errorf("bad agent id %q", id)
-	}
-	path := s.inboxPath(id)
-	if err := ensureDir(filepath.Dir(filepath.Dir(path))); err != nil {
+	dir, err := s.mailboxDir(id)
+	if err != nil {
 		return nil, err
 	}
-	if err := ensureDir(filepath.Dir(path)); err != nil {
-		return nil, err
-	}
+	path := filepath.Join(dir, "inbox.jsonl")
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, FileMode)
 	if err != nil {
 		return nil, err
@@ -372,6 +373,45 @@ func (s *Store) lockMailbox(id string, how int) (*os.File, error) {
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	return f, nil
+}
+
+// LockDelivery takes id's delivery lock: the one lock that covers reading the
+// recipient's state, claiming its stored messages and pushing them, so a turn
+// boundary cannot interleave with a delivery. The caller must call release.
+func (s *Store) LockDelivery(id string) (release func(), err error) {
+	dir, err := s.mailboxDir(id)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, "delivery.lock")
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, FileMode)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(FileMode); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	return func() { unlock(f) }, nil
+}
+
+// mailboxDir creates id's mailbox directory and returns it.
+func (s *Store) mailboxDir(id string) (string, error) {
+	if !addr.ValidID(id) {
+		return "", fmt.Errorf("bad agent id %q", id)
+	}
+	dir := filepath.Join(s.root, "mail", id)
+	if err := ensureDir(filepath.Dir(dir)); err != nil {
+		return "", err
+	}
+	if err := ensureDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func unlock(f *os.File) {
@@ -443,13 +483,31 @@ type receipt struct {
 	TS    string `json:"ts"`
 }
 
-// appendReceipt records a state change. The caller holds the mailbox lock.
+// appendFile writes one receipt batch. Tests replace it to make a disk fail
+// partway through a claim.
+var appendFile = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
+
+// appendReceipt records one state change. The caller holds the mailbox lock.
 func (s *Store) appendReceipt(id, msgID, state string) error {
-	data, err := json.Marshal(receipt{ID: msgID, State: state, TS: envelope.FormatTime(time.Now())})
-	if err != nil {
-		return err
+	return s.appendReceipts(id, []receipt{{ID: msgID, State: state, TS: envelope.FormatTime(time.Now())}})
+}
+
+// appendReceipts records a batch of state changes in one append, or none at
+// all: a partial write is truncated away, so a failed claim leaves no message
+// queued with nobody to deliver it. The caller holds the mailbox lock.
+func (s *Store) appendReceipts(id string, receipts []receipt) error {
+	if len(receipts) == 0 {
+		return nil
 	}
-	f, err := os.OpenFile(s.receiptsPath(id), os.O_WRONLY|os.O_APPEND|os.O_CREATE, FileMode)
+	var data []byte
+	for _, r := range receipts {
+		line, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		data = append(append(data, line...), '\n')
+	}
+	f, err := os.OpenFile(s.receiptsPath(id), os.O_RDWR|os.O_APPEND|os.O_CREATE, FileMode)
 	if err != nil {
 		return err
 	}
@@ -457,8 +515,43 @@ func (s *Store) appendReceipt(id, msgID, state string) error {
 	if err := f.Chmod(FileMode); err != nil {
 		return err
 	}
-	_, err = f.Write(append(data, '\n'))
-	return err
+	if err := trimTail(f); err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	before := info.Size()
+	if _, err := appendFile(f, data); err != nil {
+		if terr := f.Truncate(before); terr != nil {
+			return fmt.Errorf("%w (and the partial receipt could not be removed: %v)", err, terr)
+		}
+		return err
+	}
+	return nil
+}
+
+// trimTail truncates f to its last complete line, so the next append never
+// concatenates onto a record a crashed writer left torn. The caller holds the
+// mailbox lock exclusively.
+func trimTail(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := info.Size()
+	if size == 0 {
+		return nil
+	}
+	data := make([]byte, size)
+	if _, err := f.ReadAt(data, 0); err != nil {
+		return err
+	}
+	if data[size-1] == '\n' {
+		return nil
+	}
+	return f.Truncate(int64(bytes.LastIndexByte(data, '\n') + 1))
 }
 
 func join(envs []envelope.Envelope, states map[string]string) []Message {
@@ -494,10 +587,6 @@ func find(msgs []Message, msgID string) (Message, error) {
 		}
 	}
 	return Message{}, fmt.Errorf("%w: %s", ErrUnknownID, msgID)
-}
-
-func (s *Store) inboxPath(id string) string {
-	return filepath.Join(s.root, "mail", id, "inbox.jsonl")
 }
 
 func (s *Store) receiptsPath(id string) string {
