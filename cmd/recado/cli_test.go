@@ -542,3 +542,58 @@ func TestSkillLeavesAForeignPiExtensionAlone(t *testing.T) {
 		t.Errorf("the foreign extension changed: %q, %v", string(got), err)
 	}
 }
+
+func TestSkillManagesTheOpenCodePlugin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := &app{Root: filepath.Join(t.TempDir(), "state"), Harnesses: harness.Set{&harness.OpenCode{Home: home}}}
+	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "recado.js")
+
+	if out := mustExec(t, a, "", "skill", "setup"); !strings.Contains(lineWith(out, pluginPath), "installed") {
+		t.Errorf("skill setup = %q, want the OpenCode plugin installed", out)
+	}
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), `// recado-shim: "1"`+"\n") {
+		t.Errorf("the installed plugin is not version-stamped: %q", string(data[:40]))
+	}
+	if out := mustExec(t, a, "", "skill", "status"); !strings.Contains(lineWith(out, pluginPath), "current") {
+		t.Errorf("skill status = %q, want the OpenCode plugin current", out)
+	}
+
+	if out := mustExec(t, a, "", "skill", "remove"); !strings.Contains(lineWith(out, pluginPath), "removed") {
+		t.Errorf("skill remove = %q, want the OpenCode plugin removed", out)
+	}
+	if _, err := os.Stat(pluginPath); !os.IsNotExist(err) {
+		t.Errorf("the OpenCode plugin is still there: %v", err)
+	}
+	if out := mustExec(t, a, "", "skill", "status"); !strings.Contains(lineWith(out, pluginPath), "missing") {
+		t.Errorf("skill status = %q, want the OpenCode plugin missing", out)
+	}
+}
+
+func TestSkillLeavesAForeignOpenCodePluginAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a := &app{Root: filepath.Join(t.TempDir(), "state"), Harnesses: harness.Set{&harness.OpenCode{Home: home}}}
+	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "recado.js")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	foreign := "export default { id: \"mine\" }\n"
+	if err := os.WriteFile(pluginPath, []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := exec(t, a, "", "skill", "setup"); err == nil {
+		t.Fatal("skill setup overwrote a plugin recado did not install")
+	}
+	if _, err := exec(t, a, "", "skill", "remove"); err == nil {
+		t.Fatal("skill remove deleted a plugin recado did not install")
+	}
+	if got, err := os.ReadFile(pluginPath); err != nil || string(got) != foreign {
+		t.Errorf("the foreign plugin changed: %q, %v", string(got), err)
+	}
+}
