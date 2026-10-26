@@ -43,9 +43,8 @@ type Shim struct {
 // Set is the harnesses this binary knows.
 type Set []Harness
 
-// Default is the harnesses built into recado. The Claude Code and OpenCode
-// adapters land in later work items.
-func Default() Set { return Set{&Pi{}} }
+// Default is the harnesses built into recado.
+func Default() Set { return Set{&Pi{}, &OpenCode{}} }
 
 // Lookup finds the harness with this name.
 func (s Set) Lookup(name string) (Harness, bool) {

@@ -134,13 +134,15 @@ agents/<id>.json        registry: harness, endpoint, pid, pane, cwd, started,
 mail/<id>/inbox.jsonl   append-only envelopes for that agent
 mail/<id>/receipts.jsonl  append-only state changes {id, state, ts}
 run/pi-<pid>.sock       the Pi extension's socket, while its session lives
+run/opencode-<pid>-<n>.sock  the OpenCode plugin's socket, while its process lives
 outbox.jsonl            messages for upstream addresses (remote machines only)
 relay/<machine>.{lock,cursor,log}
 ```
 
 Writers append with `O_APPEND` under `flock`, so concurrent senders never
-interleave. Messages never carry environment variables or secrets; an
-OpenCode server password lives only in that agent's `0600` registry file.
+interleave. Messages never carry environment variables or secrets; OpenCode
+delivery needs no server password because it goes through the plugin's `0600`
+socket.
 
 ## Registry
 
@@ -216,7 +218,7 @@ type Harness interface {
 | --- | --- | --- | --- |
 | Pi ≥ 1.2 | extension's unix socket → `sendUserMessage(text, {deliverAs: "followUp"})` | queues while busy | TypeScript extension in `~/.pi/agent/extensions/` |
 | Claude Code ≥ 2.1.224 | built-in messaging socket (`--messaging-socket-path`), only while idle | `Stop` hook returns `decision: "block"` with pending messages | hooks in `~/.claude/settings.json` calling `recado hook claude …` |
-| OpenCode ≥ 2.0 | `POST /api/session/{id}/prompt` with `delivery: "queue"` | queues while busy | plugin that registers the session |
+| OpenCode ≥ 2.0 | plugin's unix socket → `session.prompt({delivery: "queue"})` | queues while busy; `session.execution.*` events report turns | plugin in `~/.config/opencode/plugins/` |
 | Codex | none: hooks cannot wake an idle session | — | send-only until its app-server path is proven |
 
 Claude Code's socket frame is undocumented (recovered from the binary, proven
@@ -224,6 +226,18 @@ on 2.1.310); a rejected push leaves the message `stored` for the `Stop` hook
 and `recado skill status` reports it. Evidence and sources:
 `.agents/reports/harness-delivery-research.md` (local) and the research it
 cites.
+
+OpenCode loads the plugin inside its server process, and one instance can see
+every session it is allowed to access, so it listens on one socket per
+process. The registry records that same socket as each session's endpoint; the
+frame names the agent (`{"agent":"<id>","text":"..."}`) and the plugin routes
+it to that agent's session. A session's agent id is `RECADO_ADDR` for the first
+session the process serves, else the session id lowercased into recado's id
+charset. The plugin reports `turn-start` on `session.execution.started` and
+`turn-end` on every way an execution can end, and gives its shell tool
+`RECADO_ADDR` and `RECADO_HARNESS=opencode` through OpenCode's shell env hook,
+so `recado send` finds the right sender even when one process holds several
+sessions.
 
 The interface is shaped so a later plugin contract can wrap it: an executable
 `recado-harness-<name>` on `PATH` answering `detect`, `push` and `check`, with
