@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -63,29 +64,79 @@ func (c *Claude) Detect(env []string) (string, bool) {
 	return self.Agent, true
 }
 
-// AgentID names the session the way Claude Code does: its hook input carries
-// the session id, shortened to eight characters because it is also what a
-// person types as a recipient.
-func (c *Claude) AgentID(hookInput []byte) (string, bool) {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(hookInput, &input); err != nil {
-		return "", false
-	}
-	id := strings.ReplaceAll(input.SessionID, "-", "")
-	if len(id) > 8 {
-		id = id[:8]
-	}
-	if !addr.ValidID(id) {
-		return "", false
-	}
-	return id, true
-}
-
 // QueuesWhileBusy reports Claude Code's limit: its socket hands a message to
 // the running turn at the next step, so recado never pushes mid-turn.
 func (c *Claude) QueuesWhileBusy() bool { return false }
+
+// DefaultHook is the ordinary shim protocol. The installed Claude flags also
+// retain their historical meaning for callers without a custom hook dialect.
+func DefaultHook(req HookRequest) HookPlan {
+	plan := HookPlan{Event: req.Event, KeepPending: req.Event == "session-start" && req.Store}
+	if req.Event == "turn-end" && req.Hold {
+		plan.HoldTurn = true
+		plan.WriteResponse = writeClaudeStop
+	}
+	return plan
+}
+
+// PrepareHook owns Claude's hook input, session setup, delivery policy and
+// Stop response. Only Claude reads stdin: the other shims need not close it.
+func (c *Claude) PrepareHook(req HookRequest) (HookPlan, error) {
+	input, err := io.ReadAll(req.Input)
+	if err != nil {
+		return HookPlan{}, err
+	}
+	plan := DefaultHook(req)
+	plan.Configure = func(agent *store.Agent) error { return c.start(agent, req.Env) }
+	var in struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal(input, &in) == nil {
+		// Claude names the session in every hook input. Shorten it to the id
+		// a person types as a recipient, as the session-start hook also does.
+		id := strings.ReplaceAll(in.SessionID, "-", "")
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		if addr.ValidID(id) {
+			plan.AgentID = id
+		}
+	}
+	if plan.HoldTurn {
+		var stop struct {
+			Active bool `json:"stop_hook_active"`
+		}
+		plan.Continuation = json.Unmarshal(input, &stop) == nil && stop.Active
+	}
+	return plan, nil
+}
+
+// writeClaudeStop hands waiting messages back as the prompt for a new turn.
+// With nothing waiting it leaves the Stop hook silent.
+func writeClaudeStop(w io.Writer, _ []store.Message, pending []store.Message, _ bool) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	texts := make([]string, len(pending))
+	for i, msg := range pending {
+		texts[i] = envelope.Render(msg.Envelope, msg.Short)
+	}
+	out, err := json.Marshal(struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}{"block", strings.Join(texts, "\n\n")})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(w, string(out))
+	return err
+}
+
+// FailOpen reports that Claude Code blocks a prompt or a stop when a hook
+// command exits 2, which is how recado reports a usage error: a Claude Code
+// hook must answer with a non-blocking error instead, so a broken recado cannot
+// trap a human's prompt or a turn.
+func (c *Claude) FailOpen() bool { return true }
 
 // Shims is empty: Claude Code is installed by merging hook entries into its
 // settings file, not by copying a file. See HookSettings.
@@ -138,7 +189,7 @@ func (c *Claude) Check() error {
 		return fmt.Errorf("claude %s is older than %s, which first binds the messaging socket", version, minClaudeVersion)
 	}
 	if !versionAtLeast(provenClaudeVersion, version) {
-		return fmt.Errorf("claude %s is newer than %s, the newest release recado's messaging socket frame is proven on; a push it rejects leaves the message for the Stop hook", version, provenClaudeVersion)
+		return fmt.Errorf("claude %s is newer than %s, the newest release recado's messaging socket frame is proven on; the socket does not acknowledge admission, so a queued message may have been discarded", version, provenClaudeVersion)
 	}
 	hooks, err := c.HookSettings()
 	if err != nil {
@@ -154,12 +205,12 @@ func (c *Claude) Check() error {
 	return nil
 }
 
-// Start records what only the session-start hook can see: where this session
+// start records what only the session-start hook can see: where this session
 // accepts pushes, the token that authenticates them, and the Claude Code
 // process liveness follows. It also tells the session's own shell which agent
 // it is, and records the fresh session idle, so a message sent to it is pushed
 // at once instead of waiting for a first turn to end.
-func (c *Claude) Start(agent *store.Agent, id string, env []string) error {
+func (c *Claude) start(agent *store.Agent, env []string) error {
 	if endpoint, ok := lookupEnv(env, "CLAUDE_CODE_MESSAGING_SOCKET"); ok {
 		agent.Endpoint = endpoint
 	}
@@ -171,7 +222,7 @@ func (c *Claude) Start(agent *store.Agent, id string, env []string) error {
 	}
 	agent.State = store.AgentIdle
 	agent.StateTS = envelope.FormatTime(time.Now())
-	return c.exportSessionEnv(env, id)
+	return c.exportSessionEnv(env, agent.ID)
 }
 
 // exportSessionEnv writes the agent's address into the file Claude Code sources
@@ -193,6 +244,14 @@ func (c *Claude) exportSessionEnv(env []string, id string) error {
 
 // Push writes the session's inbox one frame, which Claude Code turns into a
 // user turn. An idle session starts the turn at once.
+//
+// The socket has no admission reply: a write that leaves this machine proves
+// nothing about what the session did with it. A dial or write error means the
+// message did not arrive and the caller keeps it stored, but a message Claude
+// Code discards (its cross-session inbound policy, rate limits, the duplicate
+// filter) is indistinguishable from one it accepted. recado therefore claims
+// less here than it does for the shims it ships itself: a push it recorded
+// queued may have been discarded, and recado cannot tell.
 func (c *Claude) Push(agent store.Agent, msg Outgoing) error {
 	if agent.Endpoint == "" {
 		return errors.New("claude: the session published no messaging socket at its start")

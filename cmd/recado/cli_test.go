@@ -267,14 +267,14 @@ func TestInboxClaimPeekAndFilter(t *testing.T) {
 }
 
 func TestDrainPrintsWhatItCouldNotPush(t *testing.T) {
-	a, fake := newTestApp(t, false)
+	a, _ := newTestApp(t, false)
 	startSession(t, a, "worker")
 	t.Setenv("RECADO_ADDR", "worker")
 	mustExec(t, a, "", "hook", "fake", "turn-start")
 	t.Setenv("RECADO_ADDR", "asker")
 	short := strings.TrimSpace(mustExec(t, a, "", "ask", "worker", "q"))
 
-	fake.Fail = true
+	setAgentPID(t, a, "worker", 0) // no push can be attempted
 	t.Setenv("RECADO_ADDR", "worker")
 	out := mustExec(t, a, "", "hook", "fake", "turn-end")
 	if !strings.Contains(out, "[recado] from asker · question (id "+short+")") {
@@ -422,13 +422,32 @@ func TestHookSessionStartRecordsTheEndpoint(t *testing.T) {
 	}
 }
 
+// setAgentPID controls whether a test's registered agent is live.
+func setAgentPID(t *testing.T, a *app, id string, pid int) int {
+	t.Helper()
+	st, err := a.store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := st.Lookup(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := agent.PID
+	agent.PID = pid
+	if err := st.Register(agent); err != nil {
+		t.Fatal(err)
+	}
+	return old
+}
+
 func TestTurnEndJSONCarriesTheTextTheShimDelivers(t *testing.T) {
-	a, fake := newTestApp(t, false)
+	a, _ := newTestApp(t, false)
 	startSession(t, a, "worker")
 	t.Setenv("RECADO_ADDR", "asker")
 	short := strings.TrimSpace(mustExec(t, a, "", "send", "worker", "one\ntwo"))
 
-	fake.Fail = true
+	setAgentPID(t, a, "worker", 0) // no push can be attempted; the shim takes the message
 	t.Setenv("RECADO_ADDR", "worker")
 	out := mustExec(t, a, "", "hook", "fake", "turn-end", "--json")
 	got := decode[struct {
@@ -453,7 +472,7 @@ func TestDrainReleasesMessagesWhenItsOutputFails(t *testing.T) {
 	startSession(t, a, "worker")
 	t.Setenv("RECADO_ADDR", "asker")
 	short := strings.TrimSpace(mustExec(t, a, "", "send", "worker", "one"))
-	fake.Fail = true // the drain must leave the message for the shim's output
+	pid := setAgentPID(t, a, "worker", 0) // leave the message for the shim's output
 	t.Setenv("RECADO_ADDR", "worker")
 
 	root := newRootCmd(a)
@@ -467,7 +486,7 @@ func TestDrainReleasesMessagesWhenItsOutputFails(t *testing.T) {
 		t.Fatalf("after the failed output the message is %q, want it stored for a later drain", got)
 	}
 
-	fake.Fail = false
+	setAgentPID(t, a, "worker", pid)
 	mustExec(t, a, "", "hook", "fake", "turn-end")
 	if got := strings.TrimSpace(mustExec(t, a, "", "status", short)); got != short+" queued" {
 		t.Fatalf("the next drain left the message %q, want it queued to the agent", got)
@@ -501,7 +520,7 @@ func TestSkillManagesThePiExtension(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), `// recado-shim: "1"`+"\n") {
+	if !strings.HasPrefix(string(data), `// recado-shim: "3"`+"\n") {
 		t.Errorf("the installed extension is not version-stamped: %q", string(data[:40]))
 	}
 	if out := mustExec(t, a, "", "skill", "status"); !strings.Contains(lineWith(out, shimPath), "current") {
@@ -556,7 +575,7 @@ func TestSkillManagesTheOpenCodePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), `// recado-shim: "1"`+"\n") {
+	if !strings.HasPrefix(string(data), `// recado-shim: "2"`+"\n") {
 		t.Errorf("the installed plugin is not version-stamped: %q", string(data[:40]))
 	}
 	if out := mustExec(t, a, "", "skill", "status"); !strings.Contains(lineWith(out, pluginPath), "current") {

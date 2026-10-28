@@ -1,8 +1,8 @@
 package harness
 
 import (
+	"bufio"
 	"encoding/json"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,7 +24,9 @@ func socketDir(t *testing.T) string {
 	return dir
 }
 
-// collect listens on sock and returns the lines of the first connection.
+// collect listens on sock and acknowledges every line it receives, the way an
+// installed shim does, so a push that waits for an acknowledgement gets one. It
+// reports the lines of the first connection once that connection closes.
 func collect(t *testing.T, sock string) <-chan []string {
 	t.Helper()
 	ln, err := net.Listen("unix", sock)
@@ -40,8 +42,19 @@ func collect(t *testing.T, sock string) <-chan []string {
 			return
 		}
 		defer conn.Close()
-		data, _ := io.ReadAll(conn)
-		lines <- strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+		var got []string
+		reader := bufio.NewReader(conn)
+		for {
+			line, err := reader.ReadString('\n')
+			if line = strings.TrimSuffix(line, "\n"); line != "" {
+				got = append(got, line)
+				_, _ = conn.Write([]byte(`{"ok":true}` + "\n"))
+			}
+			if err != nil {
+				break
+			}
+		}
+		lines <- got
 	}()
 	return lines
 }

@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,11 +20,6 @@ import (
 // piTimeout bounds how long a push may wait on the Pi process: a wedged agent
 // must not hang the sender, and a failed push leaves the message stored.
 const piTimeout = 2 * time.Second
-
-// HarnessEnv is how a shim tells recado's commands which harness they run in,
-// and RECADO_ADDR which agent they run for. The shim sets both for the
-// children of the agent process, so `recado send` knows its sender.
-const HarnessEnv = "RECADO_HARNESS"
 
 // minPiVersion is the first Pi release whose extension API both starts a turn
 // when idle and queues a follow-up in the middle of a turn.
@@ -120,7 +114,7 @@ var piExtension string
 
 // shimVersion changes whenever the extension's text does, so setup can tell an
 // outdated shim of ours from a file someone else wrote.
-const shimVersion = "1"
+const shimVersion = "3"
 
 // Extension is the file `recado skill setup` installs into Pi, version-stamped
 // on its first line.
@@ -129,7 +123,9 @@ func Extension() []byte {
 }
 
 // Push writes one JSON line to the socket the Pi extension listens on, with
-// the text the agent should read.
+// the text the agent should read, and waits for the extension's answer. Pi's
+// extension API does not confirm admission: an acceptance means the extension
+// attempted a follow-up, not that the session took it or answered it.
 func (p *Pi) Push(agent store.Agent, msg Outgoing) error {
 	if agent.Endpoint == "" {
 		return errors.New("pi: the registry entry has no socket endpoint")
@@ -149,60 +145,10 @@ func (p *Pi) Push(agent store.Agent, msg Outgoing) error {
 	if _, err := conn.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("pi: write %s: %w", agent.Endpoint, err)
 	}
-	return nil
-}
-
-// versionAtLeast reports whether v, as `pi --version` prints it, is at least
-// want. Only the leading major.minor.patch matters.
-func versionAtLeast(v, want string) bool {
-	got, ok := parseVersion(v)
-	if !ok {
-		return false
-	}
-	min, ok := parseVersion(want)
-	if !ok {
-		return false
-	}
-	for i := range min {
-		if got[i] != min[i] {
-			return got[i] > min[i]
-		}
-	}
-	return true
-}
-
-func parseVersion(v string) ([3]int, bool) {
-	var out [3]int
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
-	if i := strings.IndexAny(v, "-+ "); i >= 0 {
-		v = v[:i]
-	}
-	parts := strings.Split(v, ".")
-	if len(parts) < 2 || len(parts) > len(out) {
-		return out, false
-	}
-	for i, part := range parts {
-		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 {
-			return out, false
-		}
-		out[i] = n
-	}
-	return out, true
+	return awaitAck(conn, piTimeout, "pi")
 }
 
 // followUp is the one frame the Pi extension accepts.
 type followUp struct {
 	Text string `json:"text"`
-}
-
-// lookupEnv reads one variable out of an environment list.
-func lookupEnv(env []string, name string) (string, bool) {
-	prefix := name + "="
-	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, prefix); ok {
-			return v, v != ""
-		}
-	}
-	return "", false
 }

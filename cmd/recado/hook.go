@@ -1,23 +1,19 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/deliver"
-	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/harness"
 	"github.com/vieitesss/recado/internal/store"
 )
 
 func (a *app) newHookCmd() *cobra.Command {
+	var options harness.HookRequest
 	cmd := &cobra.Command{
 		Use:    "hook HARNESS EVENT",
 		Short:  "Record a harness lifecycle event",
@@ -39,93 +35,98 @@ turn, because a turn-end hook runs inside the turn it would push into.`,
 			if !ok {
 				return usagef("unknown harness %q", args[0])
 			}
-			// Claude Code names the session in the hook's input and exports it to
-			// the agent's shell, but not to later hooks: read it every time.
-			var input []byte
-			if _, ok := h.(harness.Namer); ok {
-				data, err := io.ReadAll(cmd.InOrStdin())
-				if err != nil {
-					return err
-				}
-				input = data
+			options.Event, options.Input, options.Env = args[1], cmd.InOrStdin(), os.Environ()
+			err := a.runHook(cmd, h, options)
+			if err == nil {
+				return nil
 			}
-			id, err := a.hookAgent(h, input)
-			if err != nil {
-				return err
+			if hooks, ok := h.(harness.Hooks); ok && hooks.FailOpen() {
+				return exitError{1, err}
 			}
-			st, err := a.store()
-			if err != nil {
-				return err
-			}
-			svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
-			switch args[1] {
-			case "session-start":
-				reg := a.registry(h, id)
-				if reg.Endpoint, err = cmd.Flags().GetString("endpoint"); err != nil {
-					return err
-				}
-				if starter, ok := h.(harness.Starter); ok {
-					if err := starter.Start(&reg, id, os.Environ()); err != nil {
-						return err
-					}
-				}
-				if err := st.Register(reg); err != nil {
-					return err
-				}
-				drained, err := svc.Drain(id)
-				if err != nil {
-					return err
-				}
-				keep, err := cmd.Flags().GetBool("store")
-				if err != nil {
-					return err
-				}
-				if keep && len(drained.Pending) > 0 {
-					// A session start has no channel to the agent itself, so
-					// what it cannot push waits for the turn to end.
-					releasePending(st, id, drained.Pending)
-					drained.Pending = nil
-				}
-				return reportDrained(cmd, st, id, drained)
-			case "turn-start":
-				if err := a.ensureAgent(st, h, id); err != nil {
-					return err
-				}
-				return svc.TurnStart(id)
-			case "turn-end":
-				if err := a.ensureAgent(st, h, id); err != nil {
-					return err
-				}
-				hold, err := cmd.Flags().GetBool("hold")
-				if err != nil {
-					return err
-				}
-				if hold {
-					held, err := svc.Hold(id)
-					if err != nil {
-						return err
-					}
-					return holdTurn(cmd, st, id, held)
-				}
-				drained, err := svc.TurnEnd(id)
-				if err != nil {
-					return err
-				}
-				return reportDrained(cmd, st, id, drained)
-			default:
-				return usagef("unknown hook event %q: want session-start, turn-start or turn-end", args[1])
-			}
+			return err
 		}),
 	}
 	cmd.Flags().String("endpoint", "", "where the harness accepts pushed messages (session-start)")
-	cmd.Flags().Bool("store", false, "keep what this event cannot hand over for the next turn end (session-start)")
-	cmd.Flags().Bool("hold", false, "return the waiting messages as the stop decision instead of pushing (turn-end)")
+	cmd.Flags().BoolVar(&options.Store, "store", false, "keep what this event cannot hand over for the next turn end (session-start)")
+	cmd.Flags().BoolVar(&options.Hold, "hold", false, "return the waiting messages as the stop decision instead of pushing (turn-end)")
 	return cmd
 }
 
-// hookAgent is the agent id a hook runs for: RECADO_ADDR, else the harness's
-// own detection.
-func (a *app) hookAgent(h harness.Harness, input []byte) (string, error) {
+// runHook turns one harness lifecycle event into recado state.
+func (a *app) runHook(cmd *cobra.Command, h harness.Harness, req harness.HookRequest) error {
+	plan := harness.DefaultHook(req)
+	if hooks, ok := h.(harness.Hooks); ok {
+		var err error
+		plan, err = hooks.PrepareHook(req)
+		if err != nil {
+			return err
+		}
+	}
+	id, err := a.hookAgent(h, plan.AgentID)
+	if err != nil {
+		return err
+	}
+	st, err := a.store()
+	if err != nil {
+		return err
+	}
+	svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
+	switch plan.Event {
+	case "session-start":
+		reg := a.registry(h, id)
+		if reg.Endpoint, err = cmd.Flags().GetString("endpoint"); err != nil {
+			return err
+		}
+		if plan.Configure != nil {
+			if err := plan.Configure(&reg); err != nil {
+				return err
+			}
+		}
+		if err := st.Register(reg); err != nil {
+			return err
+		}
+		drained, err := svc.Drain(id)
+		if err != nil {
+			return err
+		}
+		if plan.KeepPending && len(drained.Pending) > 0 {
+			releasePending(st, id, drained.Pending)
+			drained.Pending = nil
+		}
+		return reportDrained(cmd, st, id, drained, plan)
+	case "turn-start":
+		if err := a.ensureAgent(st, h, id); err != nil {
+			return err
+		}
+		if err := svc.TurnStart(id); err != nil {
+			return err
+		}
+		if plan.WriteResponse != nil {
+			return reportDrained(cmd, st, id, deliver.Drained{}, plan)
+		}
+		return nil
+	case "turn-end":
+		if err := a.ensureAgent(st, h, id); err != nil {
+			return err
+		}
+		var drained deliver.Drained
+		if plan.HoldTurn {
+			drained, err = svc.Hold(id, plan.Continuation)
+		} else {
+			drained, err = svc.TurnEnd(id)
+		}
+		if err != nil {
+			return err
+		}
+		return reportDrained(cmd, st, id, drained, plan)
+	default:
+		return usagef("unknown hook event %q: want session-start, turn-start or turn-end", req.Event)
+	}
+}
+
+// hookAgent is the agent id a hook runs for: RECADO_ADDR, the harness's
+// detection, or the id its hook input supplied.
+func (a *app) hookAgent(h harness.Harness, fallback string) (string, error) {
 	self, ok, err := envAddr()
 	if err != nil {
 		return "", err
@@ -137,10 +138,8 @@ func (a *app) hookAgent(h harness.Harness, input []byte) (string, error) {
 		return self.Agent, nil
 	}
 	id, ok := h.Detect(os.Environ())
-	if !ok {
-		if namer, isNamer := h.(harness.Namer); isNamer {
-			id, ok = namer.AgentID(input)
-		}
+	if !ok && fallback != "" {
+		id, ok = fallback, true
 	}
 	if !ok {
 		return "", usagef("harness %s did not report an agent id; set RECADO_ADDR", h.Name())
@@ -163,41 +162,20 @@ func (a *app) ensureAgent(st *store.Store, h harness.Harness, id string) error {
 	return st.Register(a.registry(h, id))
 }
 
-// holdTurn answers a turn-end hook that runs inside the turn it reports on:
-// the waiting messages must not be pushed into it, so they come back as the
-// decision that continues the conversation. Nothing waiting means nothing
-// blocks the stop.
-func holdTurn(cmd *cobra.Command, st *store.Store, id string, held deliver.Drained) error {
-	if len(held.Pending) == 0 {
-		return nil
-	}
-	texts := make([]string, len(held.Pending))
-	for i, msg := range held.Pending {
-		texts[i] = envelope.Render(msg.Envelope, msg.Short)
-	}
-	out, err := json.Marshal(struct {
-		Decision string `json:"decision"`
-		Reason   string `json:"reason"`
-	}{"block", strings.Join(texts, "\n\n")})
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(cmd.OutOrStdout(), string(out)); err != nil {
-		releasePending(st, id, held.Pending)
-		return err
-	}
-	return nil
-}
-
 // reportDrained prints what the shim must deliver itself. If the output fails,
 // nothing reliable reached the shim: release every claimed message, so a later
 // drain or session start can still deliver it.
-func reportDrained(cmd *cobra.Command, st *store.Store, id string, drained deliver.Drained) error {
-	if err := printDrained(cmd, drained); err != nil {
-		releasePending(st, id, drained.Pending)
-		return err
+func reportDrained(cmd *cobra.Command, st *store.Store, id string, drained deliver.Drained, plan harness.HookPlan) error {
+	var err error
+	if plan.WriteResponse != nil {
+		err = plan.WriteResponse(cmd.OutOrStdout(), drained.Pushed, drained.Pending, jsonFlag(cmd))
+	} else {
+		err = printDrained(cmd, drained)
 	}
-	return nil
+	if err != nil {
+		releasePending(st, id, drained.Pending)
+	}
+	return err
 }
 
 // printDrained writes the drain report: the pushed short ids and the messages

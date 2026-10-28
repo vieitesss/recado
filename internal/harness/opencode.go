@@ -53,7 +53,10 @@ func (o *OpenCode) QueuesWhileBusy() bool { return true }
 
 // Push writes one JSON frame to the socket the OpenCode plugin listens on. The
 // frame names the agent because one plugin process serves every session it
-// knows; the text is rendered by the delivery layer.
+// knows; the text is rendered by the delivery layer. The push waits for the
+// plugin's acknowledgement, which it writes only after the session admitted the
+// queued prompt, so a frame for a session the plugin cannot reach comes back as
+// an error and the message stays stored for a later drain.
 func (o *OpenCode) Push(agent store.Agent, msg Outgoing) error {
 	if agent.Endpoint == "" {
 		return fmt.Errorf("opencode: the registry entry has no socket endpoint")
@@ -73,7 +76,7 @@ func (o *OpenCode) Push(agent store.Agent, msg Outgoing) error {
 	if _, err := conn.Write(append(line, '\n')); err != nil {
 		return fmt.Errorf("opencode: write %s: %w", agent.Endpoint, err)
 	}
-	return nil
+	return awaitAck(conn, opencodeTimeout, "opencode")
 }
 
 // Shims is the plugin `recado skill setup` installs for OpenCode.
@@ -122,7 +125,7 @@ var opencodePlugin string
 
 // openCodeShimVersion changes whenever the plugin's text does, so setup can
 // tell an outdated shim of ours from a file someone else wrote.
-const openCodeShimVersion = "1"
+const openCodeShimVersion = "2"
 
 // Plugin is the file `recado skill setup` installs into OpenCode, version-stamped
 // on its first line.

@@ -155,7 +155,16 @@ wait in its mailbox and arrive when a session with that id starts again.
 `recado hook HARNESS turn-start|turn-end` rewrites the entry atomically
 (temp file and rename, `0600`) with `state` (`busy` or `idle`) and `state_ts`
 (RFC 3339). An entry without them has never reported a turn, which a harness
-that cannot queue mid-turn treats as not idle.
+that cannot queue mid-turn treats as not idle. A turn-end hook whose input
+says a stop hook started the turn (`stop_hook_active`, Claude Code's Stop) is
+a continuation recado cannot see the end of: the hook may block again and
+start another turn, so that turn end leaves the agent `busy`. The cost is a
+state that can lag, since after recado's own hand-over the session stays
+`busy` until the next prompt ends; delivery through the stop hook keeps
+working in the meantime. A Stop with `stop_hook_active=false` records idle to
+allow socket wake, but a later Stop hook may start a continuation after that
+recording: in that case idle can be wrong and a socket push can enter the
+running continuation. A Stop with `stop_hook_active=true` stays busy.
 
 ## Delivery
 
@@ -172,10 +181,20 @@ remote machine, the relay):
      to only while idle, as recorded by its shim.
 3. **Drain**: anything still `stored` is delivered by the shim at the end of
    the recipient's turn and at session start, so a busy or gone agent still
-   gets every message, in order.
+   gets every message, in order. A refused idle push waits for the next turn
+   or session event before it is retried.
+
+The shims recado ships answer every frame with `{"ok":true}` when they accept
+it, or `{"ok":false,"error":"…"}` when they refuse, and the push waits for
+that answer under a timeout. A refusal or a silence releases the message to
+`stored`. OpenCode confirms that its harness admitted the message; Pi's
+extension API returns void and hides asynchronous failures, while Claude
+Code's socket has no answer at all, so either can report `queued` for a message
+that never became a turn.
 
 Claiming a message for push or drain records `queued` under the mailbox lock,
-so it is never delivered twice. States: `stored → queued → read`; `read` is
+preventing simultaneous claims. A lost acknowledgement can cause a retry of an
+already accepted message. States: `stored → queued → read`; `read` is
 recorded when the harness reports the turn started, where it can. States are
 for the TUI and debugging; senders never see them.
 
@@ -186,7 +205,7 @@ lock around recording `busy`/`idle`, so a delivery cannot slip across a turn
 boundary, and a turn end that finds a backlog drains it before an idle agent
 can be left with stored mail. A claim that fails partway records nothing and
 leaves the messages `stored`; a push that fails releases only the messages it
-did not hand over. Neither can strand a message. The delivery layer renders
+did not hand over. A known refusal cannot strand a message. The delivery layer renders
 the text (with the recipient's short id) and hands the adapter an
 `Outgoing{Envelope, Text}`; adapters never read the store.
 
@@ -221,9 +240,17 @@ type Harness interface {
 | OpenCode ≥ 2.0 | plugin's unix socket → `session.prompt({delivery: "queue"})` | queues while busy; `session.execution.*` events report turns | plugin in `~/.config/opencode/plugins/` |
 | Codex | none: hooks cannot wake an idle session | — | send-only until its app-server path is proven |
 
+Pi refuses pushes while busy outside a known turn, or idle without a model or
+configured authentication; the latter can conservatively refuse dynamically
+supplied credentials. Its API gives no admission result, so races, input
+interceptors or other asynchronous errors can still discard an acknowledged
+message.
+
 Claude Code's socket frame is undocumented (recovered from the binary, proven
-on 2.1.310); a rejected push leaves the message `stored` for the `Stop` hook
-and `recado skill status` reports it. Evidence and sources:
+on 2.1.310), and the socket acknowledges neither admission nor refusal: a
+message it discards is indistinguishable from one it took, so `queued` here
+means "written", not "a turn started". The `Stop` hook still drains what
+stays `stored`. Evidence and sources:
 `.agents/reports/harness-delivery-research.md` (local) and the research it
 cites.
 
@@ -237,16 +264,20 @@ charset. The plugin reports `turn-start` on `session.execution.started` and
 `turn-end` on every way an execution can end, and gives its shell tool
 `RECADO_ADDR` and `RECADO_HARNESS=opencode` through OpenCode's shell env hook,
 so `recado send` finds the right sender even when one process holds several
-sessions.
+sessions. That hook carries no session of its own, so a shell belongs to the
+session whose shell tool call it is starting; when two sessions have one in
+flight the shell gets no address, and `recado send` reports that it cannot tell
+who is sending rather than guessing.
 
-A harness may also need things `Harness` cannot express, so the adapter builds
-them as optional capabilities beside it: `Starter` (what only the session
-start can see: the messaging socket, the session's token, the process liveness
-follows, and the `RECADO_ADDR` the agent's own shell gets through
-`CLAUDE_ENV_FILE`), `Namer` (Claude Code names the session in its hook input
-and exports it to the shell but not to later hooks) and `Settings` (the hook
-entries `skill setup` merges into the user's `settings.json`, recognised by
-their command prefix, removed without touching the rest of the file). A
+An adapter can implement the optional `Hooks` contract for its lifecycle
+protocol: it translates hook events, prepares the input and session, chooses
+how to handle pending messages, formats its response, and says whether failures
+must be non-blocking.
+Otherwise the standard shim report is used. The separate `Settings` capability
+supplies the hook entries `skill setup` merges into a settings file, recognised
+by their command prefix and removed without touching the rest of the file.
+Claude's hook input names the session; session start records the socket, token
+and process liveness and exports `RECADO_ADDR` through `CLAUDE_ENV_FILE`. Its
 turn-end hook runs inside the turn it reports on, so it cannot push:
 `recado hook claude turn-end --hold` claims what waits and prints it as the
 `decision: "block"` reason, which starts a new turn; a session start has no
@@ -254,6 +285,13 @@ channel to the agent at all, so `--store` leaves an unpushable backlog for
 that turn end instead of handing it to a shim that only Claude Code would
 ignore. The messages a held turn delivered stay `queued`: the continuation
 turn fires no prompt hook to report its start.
+
+Claude Code blocks the prompt or the stop when a hook exits `2`, so a recado
+failure there answers with exit `1` (non-blocking: the notice reaches the
+human, the prompt goes through) instead of its usual usage error. A shim also
+bounds every call it makes to `recado`, so a wedged CLI costs a notice rather
+than the session; it fails open, because a message that waits for the next
+event beats a human who cannot type.
 
 The interface is shaped so a later plugin contract can wrap it: an executable
 `recado-harness-<name>` on `PATH` answering `detect`, `push` and `check`, with

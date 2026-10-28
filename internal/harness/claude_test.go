@@ -179,7 +179,7 @@ func TestClaudeStartReadsTheSessionsOwnEnvironment(t *testing.T) {
 		"CLAUDE_ENV_FILE=" + envFile,
 	}
 	agent := store.Agent{ID: "sub-1", Harness: "claude", PID: 1}
-	if err := (&Claude{}).Start(&agent, "sub-1", env); err != nil {
+	if err := (&Claude{}).start(&agent, env); err != nil {
 		t.Fatal(err)
 	}
 	if agent.Endpoint != "/tmp/cc-socks/1.sock" {
@@ -203,7 +203,7 @@ func TestClaudeStartReadsTheSessionsOwnEnvironment(t *testing.T) {
 func TestClaudeStartWithoutAMessagingSocket(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no ps: the pid walk finds nothing
 	agent := store.Agent{ID: "sub-1", Harness: "claude", PID: 1}
-	if err := (&Claude{}).Start(&agent, "sub-1", []string{"HOME=/tmp"}); err != nil {
+	if err := (&Claude{}).start(&agent, []string{"HOME=/tmp"}); err != nil {
 		t.Fatal(err)
 	}
 	if agent.Endpoint != "" {
@@ -304,14 +304,38 @@ func TestClaudeAncestorSkipsTheShell(t *testing.T) {
 
 func TestClaudeAgentIDFromHookInput(t *testing.T) {
 	claude := &Claude{}
-	input := []byte(`{"session_id":"01a177db-2b83-77ac-9faa-a97df881c9ee","cwd":"/tmp","hook_event_name":"SessionStart"}`)
-	if id, ok := claude.AgentID(input); !ok || id != "01a177db" {
-		t.Errorf("AgentID = %q, %v; want the session id without dashes, shortened to eight characters", id, ok)
+	agentID := func(input string) string {
+		t.Helper()
+		plan, err := claude.PrepareHook(HookRequest{Input: strings.NewReader(input)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan.AgentID
 	}
-	if _, ok := claude.AgentID([]byte(`{"cwd":"/tmp"}`)); ok {
-		t.Error("AgentID named a session that reported no session_id")
+	input := `{"session_id":"01a177db-2b83-77ac-9faa-a97df881c9ee","cwd":"/tmp","hook_event_name":"SessionStart"}`
+	if id := agentID(input); id != "01a177db" {
+		t.Errorf("AgentID = %q; want the session id without dashes, shortened to eight characters", id)
 	}
-	if _, ok := claude.AgentID(nil); ok {
-		t.Error("AgentID named a session from empty input")
+	if id := agentID(`{"cwd":"/tmp"}`); id != "" {
+		t.Errorf("AgentID = %q; the session reported no session_id", id)
+	}
+	if id := agentID(""); id != "" {
+		t.Errorf("AgentID = %q from empty input", id)
+	}
+}
+
+func TestClaudeHookReadsSessionAndContinuationIndependently(t *testing.T) {
+	for _, tc := range []struct {
+		input        string
+		id           string
+		continuation bool
+	}{
+		{`{"session_id":"abcd1234","stop_hook_active":"invalid"}`, "abcd1234", false},
+		{`{"session_id":42,"stop_hook_active":true}`, "", true},
+	} {
+		plan, err := (&Claude{}).PrepareHook(HookRequest{Event: "turn-end", Hold: true, Input: strings.NewReader(tc.input)})
+		if err != nil || plan.AgentID != tc.id || plan.Continuation != tc.continuation {
+			t.Errorf("PrepareHook(%s) = id %q, continuation %v, %v; want %q, %v", tc.input, plan.AgentID, plan.Continuation, err, tc.id, tc.continuation)
+		}
 	}
 }

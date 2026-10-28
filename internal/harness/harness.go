@@ -3,11 +3,68 @@ package harness
 
 import (
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/skill"
 	"github.com/vieitesss/recado/internal/store"
 )
+
+// HarnessEnv is how a shim tells recado's commands which harness they run in,
+// and RECADO_ADDR which agent they run for. The shim sets both for the
+// children of the agent process, so `recado send` knows its sender.
+const HarnessEnv = "RECADO_HARNESS"
+
+// versionAtLeast reports whether v is at least want. Only the leading
+// major.minor.patch matters.
+func versionAtLeast(v, want string) bool {
+	got, ok := parseVersion(v)
+	if !ok {
+		return false
+	}
+	min, ok := parseVersion(want)
+	if !ok {
+		return false
+	}
+	for i := range min {
+		if got[i] != min[i] {
+			return got[i] > min[i]
+		}
+	}
+	return true
+}
+
+func parseVersion(v string) ([3]int, bool) {
+	var out [3]int
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+ "); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) < 2 || len(parts) > len(out) {
+		return out, false
+	}
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// lookupEnv reads one variable out of an environment list.
+func lookupEnv(env []string, name string) (string, bool) {
+	prefix := name + "="
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, prefix); ok {
+			return v, v != ""
+		}
+	}
+	return "", false
+}
 
 // Outgoing is one message the delivery layer hands to a harness: the envelope
 // itself and the text the agent reads, rendered with the recipient's own short
@@ -39,20 +96,6 @@ type Shim struct {
 	Path    string
 	Content []byte
 	Mode    os.FileMode
-}
-
-// Starter is the optional capability of a harness whose session start must
-// configure the session from the hook process itself: where the session
-// accepts pushes, any credential, which process liveness follows, and the
-// variables the agent's own shell needs. Only the hook can see that.
-type Starter interface {
-	Start(agent *store.Agent, id string, env []string) error
-}
-
-// Namer is the optional capability of a harness that names the agent in the
-// hook's own input rather than in the environment.
-type Namer interface {
-	AgentID(hookInput []byte) (string, bool)
 }
 
 // Settings is the optional capability of a harness installed by merging hook

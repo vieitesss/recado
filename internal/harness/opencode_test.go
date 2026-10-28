@@ -92,12 +92,13 @@ func TestOpenCodeShims(t *testing.T) {
 	}
 	body := string(s.Content)
 	for _, part := range []string{
-		`// recado-shim: "1"`,
+		`// recado-shim: "2"`,
 		`hook", "opencode"`,
 		`delivery: "queue"`,
 		`RECADO_ADDR`,
 		`RECADO_HARNESS: "opencode"`,
 		`ctx.session.prompt`,
+		`JSON.stringify(ok ? { ok: true }`,
 	} {
 		if !strings.Contains(body, part) {
 			t.Errorf("plugin does not mention %q", part)

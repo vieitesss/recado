@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vieitesss/recado/internal/harness"
 )
@@ -15,6 +16,10 @@ import (
 // Claude Code's home under the test's control.
 func newClaudeApp(t *testing.T) *app {
 	t.Helper()
+	// Never use the invoking Claude session's real socket, token or env file.
+	for _, name := range []string{"CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_ENV_FILE", "RECADO_HARNESS"} {
+		t.Setenv(name, "")
+	}
 	return &app{
 		Root:      filepath.Join(t.TempDir(), "state"),
 		Harnesses: harness.Set{&harness.Claude{Home: t.TempDir()}},
@@ -48,6 +53,18 @@ func listenInbox(t *testing.T) (string, <-chan []string) {
 		lines <- strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	}()
 	return sock, lines
+}
+
+// receiveInbox fails promptly if the expected push never reaches the socket.
+func receiveInbox(t *testing.T, lines <-chan []string) []string {
+	t.Helper()
+	select {
+	case got := <-lines:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Claude's socket to receive a frame")
+		return nil
+	}
 }
 
 // stopDecision is the Stop hook output that keeps Claude Code talking.
@@ -108,7 +125,7 @@ func TestClaudeStopHookDeliversNothingWhenNothingWaited(t *testing.T) {
 	t.Setenv("RECADO_ADDR", "asker")
 	mustExec(t, a, "", "ask", "worker", "are you there?")
 
-	got := <-lines
+	got := receiveInbox(t, lines)
 	if len(got) != 1 {
 		t.Fatalf("socket received %q, want one frame", got)
 	}
@@ -170,7 +187,7 @@ func TestClaudeSessionStartPushesABacklogWhenTheSessionTakesMessages(t *testing.
 	t.Setenv("RECADO_ADDR", "worker")
 	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", sock)
 	mustExec(t, a, "", "hook", "claude", "session-start")
-	if got := <-lines; len(got) != 1 || !strings.Contains(got[0], "backlog") {
+	if got := receiveInbox(t, lines); len(got) != 1 || !strings.Contains(got[0], "backlog") {
 		t.Errorf("socket received %q, want the backlog", got)
 	}
 }
@@ -199,11 +216,69 @@ func TestClaudeSessionStartNamesTheAgentFromItsHookInput(t *testing.T) {
 	}
 }
 
-func TestClaudeHookNeedsAnAgentID(t *testing.T) {
+// TestFailedClaudeHooksDoNotBlockTheHuman: Claude Code blocks the prompt or the
+// stop when a hook exits 2, so a recado failure answers with its non-blocking
+// error instead: the human's prompt goes through and the notice says why recado
+// did nothing. Other harnesses have no such rule and keep the usage error.
+func TestFailedClaudeHooksDoNotBlockTheHuman(t *testing.T) {
+	for _, event := range []string{"session-start", "turn-start", "turn-end"} {
+		t.Run(event, func(t *testing.T) {
+			a := newClaudeApp(t)
+			t.Setenv("RECADO_ADDR", "")
+			_, err := exec(t, a, "", "hook", "claude", event)
+			if code := exitCode(err); code != 1 {
+				t.Fatalf("a failed %s: exit %d, want 1, so Claude Code is not told to block (err %v)", event, code, err)
+			}
+			// main prints the error to stderr, which Claude Code shows the human.
+			if err == nil || !strings.Contains(err.Error(), "agent id") {
+				t.Errorf("the failure = %v, want the notice naming its cause", err)
+			}
+		})
+	}
+
+	t.Run("another harness keeps the usage error", func(t *testing.T) {
+		a := &app{Root: filepath.Join(t.TempDir(), "state"), Harnesses: harness.Set{&harness.Fake{}}}
+		t.Setenv("RECADO_ADDR", "")
+		if _, err := exec(t, a, "", "hook", "fake", "turn-start"); exitCode(err) != 2 {
+			t.Errorf("a failed fake hook: exit %d, want 2 (err %v)", exitCode(err), err)
+		}
+	})
+}
+
+// TestClaudeStopHookLeavesAContinuationBusy: a Stop that runs because a stop
+// hook blocked is a continuation recado cannot see the end of, and the hook may
+// block again. Publishing idle there would let the next message be pushed into a
+// turn that is still running, so the agent stays busy until a prompt's end.
+func TestClaudeStopHookLeavesAContinuationBusy(t *testing.T) {
 	a := newClaudeApp(t)
-	t.Setenv("RECADO_ADDR", "")
-	if _, err := exec(t, a, "", "hook", "claude", "session-start"); exitCode(err) != 2 {
-		t.Errorf("session-start with no id and no hook input: exit %d, want 2 (err %v)", exitCode(err), err)
+	sock, lines := listenInbox(t)
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", sock)
+	t.Setenv("RECADO_ADDR", "worker")
+	mustExec(t, a, "", "hook", "claude", "session-start")
+	mustExec(t, a, "", "hook", "claude", "turn-start")
+
+	t.Setenv("RECADO_ADDR", "asker")
+	mustExec(t, a, "", "send", "worker", "waiting")
+	t.Setenv("RECADO_ADDR", "worker")
+	if got := mustExec(t, a, "", "hook", "claude", "turn-end", "--hold"); !strings.Contains(got, "waiting") {
+		t.Fatalf("Stop = %q, want the waiting message", got)
+	}
+
+	// The continuation ends with nothing waiting, and says a stop hook started
+	// it. The hook stays silent, so Claude Code is free to stop.
+	cont := `{"session_id":"01a177db-2b83-77ac-9faa-a97df881c9ee","hook_event_name":"Stop","stop_hook_active":true}`
+	if out := mustExec(t, a, cont, "hook", "claude", "turn-end", "--hold"); out != "" {
+		t.Errorf("Stop of a continuation = %q, want no output", out)
+	}
+
+	// Still busy: the next message waits for a prompt's turn end instead of
+	// landing inside whatever turn that hook started.
+	t.Setenv("RECADO_ADDR", "asker")
+	mustExec(t, a, "", "send", "worker", "after the continuation")
+	select {
+	case got := <-lines:
+		t.Fatalf("socket received %q, want the message held while the agent is busy", got)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

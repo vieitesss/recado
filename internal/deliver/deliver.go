@@ -169,8 +169,8 @@ type Drained struct {
 // the agent's harness. A drain runs at session start and turn end, so it is
 // allowed to push when the recorded state is idle or was never reported; a
 // harness that cannot take a message mid-turn is left alone while it is busy.
-// Whatever could not be pushed is returned claimed, for the calling shim to
-// deliver itself.
+// When no push can be attempted, the messages are returned claimed for the
+// calling shim. A failed push releases the unhanded messages for a later retry.
 func (s *Service) Drain(id string) (Drained, error) {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
@@ -195,16 +195,27 @@ func (s *Service) drainLocked(id string) (Drained, error) {
 		return Drained{Pending: msgs}, nil
 	}
 	pushed, rest := s.push(agent, h, msgs)
-	return Drained{Pushed: pushed, Pending: rest}, nil
+	if err := s.release(id, rest); err != nil {
+		return Drained{}, err
+	}
+	return Drained{Pushed: pushed}, nil
 }
 
 // Hold drains id's mailbox without pushing anything, for a harness that hands
 // the messages to the agent itself. A turn-end hook is the case: the turn it
 // runs in is still running, so pushing would land the message inside that turn
 // instead of the next one. The messages come back claimed, in order, for the
-// caller to hand over; the agent is recorded idle only when nothing was
-// waiting, because a held message starts a turn of its own.
-func (s *Service) Hold(id string) (Drained, error) {
+// caller to hand over; the agent is recorded idle only when nothing was waiting
+// and the turn really settled, which continuation reports.
+//
+// continuation says the turn that just ended was started by a stop hook rather
+// than by a prompt. A harness runs those in a loop: the hook may block again,
+// and recado sees neither that decision nor the turn it starts. Publishing idle
+// at such a turn's end would let a push land inside a turn recado never saw
+// begin, so the agent stays busy. The cost is a status that can lag: after
+// recado's own hand-over the session stays busy until the next prompt ends,
+// while the stop hook keeps handing messages over in the meantime.
+func (s *Service) Hold(id string, continuation bool) (Drained, error) {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
 		return Drained{}, err
@@ -219,6 +230,9 @@ func (s *Service) Hold(id string) (Drained, error) {
 	}
 	if len(msgs) > 0 {
 		return Drained{Pending: msgs}, nil
+	}
+	if continuation {
+		return Drained{}, nil
 	}
 	return Drained{}, s.Store.SetState(id, store.AgentIdle)
 }

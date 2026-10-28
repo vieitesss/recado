@@ -212,13 +212,16 @@ func TestRejectedPushStaysStored(t *testing.T) {
 	}
 }
 
-func TestDrainReturnsWhatItCouldNotPush(t *testing.T) {
+func TestDrainReleasesWhatTheHarnessRefuses(t *testing.T) {
 	f := setup(t, true)
 	f.register(t, "worker", os.Getpid(), store.AgentBusy)
 	f.fake.Fail = true
 
+	var ids []string
 	for _, body := range []string{"first", "second"} {
-		if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
+		env := f.env(t, "asker", "worker", envelope.KindMessage, body, nil)
+		ids = append(ids, env.ID)
+		if _, err := f.svc.Deliver(env); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -226,18 +229,21 @@ func TestDrainReturnsWhatItCouldNotPush(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(drained.Pending) != 2 {
-		t.Fatalf("Pending = %d, want 2 for the shim to deliver", len(drained.Pending))
+	if len(drained.Pending)+len(drained.Pushed) != 0 {
+		t.Fatalf("Drain = %+v, want refused messages left for retry", drained)
 	}
-	if len(drained.Pushed) != 0 {
-		t.Errorf("Pushed = %d, want 0", len(drained.Pushed))
+	for _, id := range ids {
+		if got := f.state(t, "worker", id); got != store.StateStored {
+			t.Errorf("state = %q, want stored", got)
+		}
 	}
+	f.fake.Fail = false
 	again, err := f.svc.Drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(again.Pushed)+len(again.Pending) != 0 {
-		t.Error("a drain returned messages a previous drain already claimed")
+	if len(again.Pushed) != 2 {
+		t.Errorf("retry pushed %d messages, want both", len(again.Pushed))
 	}
 }
 
@@ -601,8 +607,13 @@ func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
 	f := setup(t, false)
 	f.register(t, "worker", os.Getpid(), store.AgentIdle)
 	// Stored while the agent was busy, as a mid-turn send leaves them.
+	var second string
 	for _, body := range []string{"first", "second"} {
-		if err := f.st.Append("worker", f.env(t, "asker", "worker", envelope.KindMessage, body, nil)); err != nil {
+		env := f.env(t, "asker", "worker", envelope.KindMessage, body, nil)
+		if body == "second" {
+			second = env.ID
+		}
+		if err := f.st.Append("worker", env); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -612,8 +623,11 @@ func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(drained.Pushed) != 1 || len(drained.Pending) != 1 {
-		t.Fatalf("Drain = %d pushed, %d pending; want only the second message left over", len(drained.Pushed), len(drained.Pending))
+	if len(drained.Pushed) != 1 || len(drained.Pending) != 0 {
+		t.Fatalf("Drain = %d pushed, %d pending; want only the first handed over", len(drained.Pushed), len(drained.Pending))
+	}
+	if got := f.state(t, "worker", second); got != store.StateStored {
+		t.Errorf("second message state = %q, want stored", got)
 	}
 	pushes, err := f.fake.Pushes()
 	if err != nil {
@@ -623,12 +637,7 @@ func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
 		t.Fatalf("pushes = %+v, want only the first message", pushes)
 	}
 
-	// The shim could not deliver the pending one either: the next drain hands
-	// over only that one, never the already-pushed prefix again.
-	second := drained.Pending[0].Envelope.ID
-	if err := f.st.Release("worker", second); err != nil {
-		t.Fatal(err)
-	}
+	// The next drain retries only the rejected message, never the pushed prefix.
 	f.fake.FailAfter = 0
 	again, err := f.svc.Drain("worker")
 	if err != nil {
@@ -674,7 +683,7 @@ func TestHoldHandsPendingMessagesBackWithoutPushing(t *testing.T) {
 		}
 	}
 
-	held, err := f.svc.Hold("worker")
+	held, err := f.svc.Hold("worker", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +713,7 @@ func TestHoldHandsPendingMessagesBackWithoutPushing(t *testing.T) {
 	if err := f.svc.TurnStart("worker"); err != nil {
 		t.Fatal(err)
 	}
-	again, err := f.svc.Hold("worker")
+	again, err := f.svc.Hold("worker", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +726,7 @@ func TestHoldRecordsIdleWhenNothingIsPending(t *testing.T) {
 	f := setup(t, false)
 	f.register(t, "worker", os.Getpid(), store.AgentBusy)
 
-	held, err := f.svc.Hold("worker")
+	held, err := f.svc.Hold("worker", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,5 +739,66 @@ func TestHoldRecordsIdleWhenNothingIsPending(t *testing.T) {
 	}
 	if agent.State != store.AgentIdle {
 		t.Errorf("agent state = %q, want idle: nothing was waiting, so the turn really ended", agent.State)
+	}
+}
+
+// TestHoldKeepsAForeignContinuationBusy: a stop hook that starts another turn
+// is a turn recado never saw a prompt for, and it may start as many of them as
+// it likes. Publishing idle when it ends would let a push land inside a turn
+// that is still going, so only a continuation recado asked for settles.
+func TestHoldKeepsAForeignContinuationBusy(t *testing.T) {
+	f := setup(t, false)
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+
+	held, err := f.svc.Hold("worker", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held.Pushed)+len(held.Pending) != 0 {
+		t.Fatalf("Hold = %+v, want nothing to hand back", held)
+	}
+	agent, err := f.st.Lookup("worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.State != store.AgentBusy {
+		t.Fatalf("agent state = %q, want busy: the turn was someone else's continuation", agent.State)
+	}
+}
+
+// TestHoldKeepsHandingOverDuringAContinuation: a continuation never settles the
+// agent, but it is still a turn, so the messages waiting in the mailbox go out
+// at each of its ends; only a turn that began with a prompt publishes idle.
+func TestHoldKeepsHandingOverDuringAContinuation(t *testing.T) {
+	f := setup(t, false)
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "first", nil)); err != nil {
+		t.Fatal(err)
+	}
+	held, err := f.svc.Hold("worker", false)
+	if err != nil || len(held.Pending) != 1 || held.Pending[0].Envelope.Body != "first" {
+		t.Fatalf("first Hold = %+v, %v; want the first message handed over", held, err)
+	}
+
+	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "second", nil)); err != nil {
+		t.Fatal(err)
+	}
+	cont, err := f.svc.Hold("worker", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cont.Pending) != 1 || cont.Pending[0].Envelope.Body != "second" {
+		t.Fatalf("Hold = %+v, want the next message handed over by the continuation", cont)
+	}
+	if agent, err := f.st.Lookup("worker"); err != nil || agent.State != store.AgentBusy {
+		t.Fatalf("agent state = %q, %v; want busy", agent.State, err)
+	}
+
+	// The next prompt's end is recado's proof the turn really settled.
+	if _, err := f.svc.Hold("worker", false); err != nil {
+		t.Fatal(err)
+	}
+	if agent, err := f.st.Lookup("worker"); err != nil || agent.State != store.AgentIdle {
+		t.Fatalf("agent state = %q, %v; want idle after a prompt's turn end", agent.State, err)
 	}
 }
