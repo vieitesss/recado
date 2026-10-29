@@ -89,7 +89,7 @@ export default function (pi: ExtensionAPI) {
 				if (idle && !ctx.model) throw new Error("the session has no model");
 				if (idle && ctx.model && typeof ctx.modelRegistry.hasConfiguredAuth === "function" &&
 					!ctx.modelRegistry.hasConfiguredAuth(ctx.model)) throw new Error("the session has no configured model authentication");
-				pi.sendUserMessage(msg.text, { deliverAs: "followUp" });
+				pi.sendUserMessage(msg.text, { deliverAs: "steer" });
 			} catch (err) {
 				const reason = String(err);
 				const refused = queued.splice(0);

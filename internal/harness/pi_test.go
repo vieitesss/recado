@@ -162,7 +162,7 @@ func TestPiShims(t *testing.T) {
 		"recado-shim:",
 		"session_start",
 		"session_shutdown",
-		`deliverAs: "followUp"`,
+		`deliverAs: "steer"`,
 		"RECADO_ADDR",
 		"RECADO_HARNESS",
 		"hook",
@@ -170,10 +170,6 @@ func TestPiShims(t *testing.T) {
 		if !strings.Contains(text, wantPart) {
 			t.Errorf("the extension does not mention %q", wantPart)
 		}
-	}
-	// Steering splices a message into the running turn; recado never does.
-	if strings.Contains(text, `"steer"`) {
-		t.Error("the extension mentions steer: recado only ever queues follow-ups")
 	}
 }
 

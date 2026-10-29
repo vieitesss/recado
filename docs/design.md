@@ -175,7 +175,7 @@ remote machine, the relay):
    durable; `send` may return.
 2. **Push**: if the recipient is live and its harness can take the message
    now, hand it over through the harness adapter and record `queued`.
-   - A harness that queues while busy (Pi `followUp`, OpenCode
+   - A harness that queues while busy (Pi `steer`, OpenCode
      `delivery: "queue"`) is pushed to whenever it is live.
    - A harness that cannot (Claude Code's socket delivers mid-turn) is pushed
      to only while idle, as recorded by its shim.
@@ -235,7 +235,7 @@ type Harness interface {
 
 | Harness | Push | Busy / turn end | Shim |
 | --- | --- | --- | --- |
-| Pi ≥ 1.2 | extension's unix socket → `sendUserMessage(text, {deliverAs: "followUp"})` | queues while busy | TypeScript extension in `~/.pi/agent/extensions/` |
+| Pi ≥ 1.2 | extension's unix socket → `sendUserMessage(text, {deliverAs: "steer"})` | lands after the running tool calls | TypeScript extension in `~/.pi/agent/extensions/` |
 | Claude Code ≥ 2.1.224 | built-in messaging socket (`--messaging-socket-path`), only while idle | `Stop` hook returns `decision: "block"` with pending messages | hooks in `~/.claude/settings.json` calling `recado hook claude …` |
 | OpenCode ≥ 2.0 | plugin's unix socket → `session.prompt({delivery: "queue"})` | queues while busy; `session.execution.*` events report turns | plugin in `~/.config/opencode/plugins/` |
 | Codex | none: hooks cannot wake an idle session | — | send-only until its app-server path is proven |

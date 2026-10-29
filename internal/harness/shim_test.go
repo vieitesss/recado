@@ -440,7 +440,7 @@ func TestPiExtensionAnswersEachPush(t *testing.T) {
 		if len(sends) != 1 {
 			t.Fatalf("the session took %d messages, want 1", len(sends))
 		}
-		if msg, _ := sends[0].(map[string]any); msg["text"] != "hello from recado" || msg["deliverAs"] != "followUp" {
+		if msg, _ := sends[0].(map[string]any); msg["text"] != "hello from recado" || msg["deliverAs"] != "steer" {
 			t.Errorf("the session was given %v, want the pushed text as a follow-up turn", sends[0])
 		}
 	})
@@ -491,7 +491,7 @@ func TestPiExtensionAnswersEachPush(t *testing.T) {
 		if len(sends) != 2 {
 			t.Fatalf("the session received %v, want the push and turn-end backlog", sends)
 		}
-		if msg, _ := sends[1].(map[string]any); msg["text"] != "handed over at turn end" || msg["deliverAs"] != "followUp" {
+		if msg, _ := sends[1].(map[string]any); msg["text"] != "handed over at turn end" || msg["deliverAs"] != "steer" {
 			t.Errorf("the turn-end backlog = %v, want a follow-up", sends[1])
 		}
 	})
