@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	osexec "os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -92,7 +93,8 @@ type app struct {
 	Root       string // state root; empty means store.DefaultRoot()
 	Harnesses  harness.Set
 	Machines   *machine.Registry
-	startRelay func(string) error // tests can avoid starting a subprocess
+	startRelay func(string) error      // tests can avoid starting a subprocess
+	execCmd    func(*osexec.Cmd) error // tests can avoid running update's commands
 }
 
 func newApp() *app { return &app{Harnesses: harness.Default()} }
@@ -113,6 +115,7 @@ The caller's address is $RECADO_ADDR, else what the harness adapter detects.`,
 	root.PersistentFlags().Bool("json", false, "print machine-readable JSON")
 	root.AddCommand(
 		a.newSkillCmd(),
+		a.newUpdateCmd(),
 		a.newMachineCmd(),
 		a.newSendCmd(),
 		a.newAskCmd(),
