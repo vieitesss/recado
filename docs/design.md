@@ -84,8 +84,8 @@ recado reply ID "text"                                  # answer message ID
 ```
 
 - `send` and `ask` print the short id and return. `ask` does not block; the
-  agent ends its turn and the answer arrives as its next turn. `ask --wait
-  [--timeout D]` blocks, for scripts and hosts without a wake.
+  agent ends its turn and the answer arrives as its next turn. A blocking
+  `ask --wait` for scripts and hosts without a wake is not yet implemented.
 - `reply ID` sends kind `answer` to the original sender, with `reply_to` set
   and the original `meta` copied. It always names the message: a Manager
   answering two Subagents at once never sends to the wrong one.
@@ -136,7 +136,7 @@ mail/<id>/receipts.jsonl  append-only state changes {id, state, ts}
 run/pi-<pid>.sock       the Pi extension's socket, while its session lives
 run/opencode-<pid>-<n>.sock  the OpenCode plugin's socket, while its process lives
 outbox.jsonl            messages for upstream addresses (remote machines only)
-relay/<machine>.{lock,cursor,log}
+relay/<machine>.{lock,cursor,log,senders}
 ```
 
 Writers append with `O_APPEND` under `flock`, so concurrent senders never
@@ -303,9 +303,9 @@ recado machine add db  podman db-dev
 recado machine ls
 ```
 
-The registry is `~/.config/recado/machines.toml`, editable by hand. The kind
-says how to run a command there; it is a command prefix (`ssh -o
-BatchMode=yes rpi`, `docker exec -i web`, `podman exec -i db-dev`), so a new
+The registry is `${XDG_CONFIG_HOME:-~/.config}/recado/machines.toml`, editable
+by hand. The kind says how to run a command there; it is a command prefix
+(`ssh -o BatchMode=yes rpi`, `docker exec -i web`, `podman exec -i db-dev`), so a new
 kind is a few lines, plugin-shaped like harnesses. An unknown machine name
 fails with the configured list; there is no silent SSH fallback. recado must
 be installed on both ends; `send` says so clearly when it is not.
@@ -323,16 +323,32 @@ containers and behind NAT:
   transport), rewrites `from` to `recado://rpi/sub-1` and `to` to
   `recado://local/manager-4123`, and delivers it locally.
 
-Agents never see routing: they reply by id, and the id's envelope carries the
-right address.
+Agents never choose a route: they reply by id, and the id's envelope carries
+the right address. An upstream send or reply prints the full lowercase message
+id: its recipient's shortest unique suffix cannot be known until the relay
+delivers it. Local sends and outward remote sends still print the recipient's
+short id.
 
 ### Relay
 
 One relay per (this host, remote machine), not per agent: several local
-agents talking to the same remote share it, and a single cursor means no
-message is delivered twice. The first `send` to a machine starts it if its
-lock is free. It pulls only messages addressed to this host, survives dropped
-connections, and exits once no live local agent has messaged that machine.
+agents talking to the same remote share it. The cursor is the byte offset
+immediately after the last handled outbox line; delivery is idempotent by
+message id, including if a relay stops between delivery and cursor update.
+`relay/<machine>.senders` is an append-only, deduplicated list of local agent
+ids that have sent to that machine. An agent is live when its registry pid is
+live, regardless of when it sent. The first `send` to a machine starts a relay
+if its lock is free. It pulls only messages addressed to this host, survives
+dropped connections, and exits once no recorded sender is live and the outbox
+has been drained.
+
+`recado outbox --host H --json --after N` emits JSON lines with `offset` (the
+next byte offset) and `envelope`, filtering for upstream host H. `N` must be
+zero or the byte offset after a complete line, not beyond the end of the file.
+With `--follow`, it keeps the connection open and emits
+`{"offset":N,"caught_up":true}` after reaching the end of the current complete
+lines, initially and on each subsequent poll. A watermark includes skipped lines for other hosts; it lets the relay
+advance its cursor and know that the outbox has been drained before exiting.
 
 A later transport may share mailbox files directly (a synced directory, a
 bind mount into a container) instead of relaying.

@@ -17,6 +17,7 @@ import (
 	"github.com/vieitesss/recado/internal/deliver"
 	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/harness"
+	"github.com/vieitesss/recado/internal/machine"
 	"github.com/vieitesss/recado/internal/store"
 )
 
@@ -56,8 +57,8 @@ func usage(err error) error { return exitError{2, err} }
 
 func usagef(format string, args ...any) error { return usage(fmt.Errorf(format, args...)) }
 
-// classify turns domain errors into the exit code they deserve: names that do
-// not exist are usage errors, everything else a failure.
+// classify turns invalid input and unknown names into usage errors; other
+// domain errors are failures.
 func classify(err error) error {
 	if err == nil {
 		return nil
@@ -67,10 +68,14 @@ func classify(err error) error {
 		return err
 	}
 	switch {
-	case errors.Is(err, store.ErrUnknownAgent),
+	case errors.Is(err, deliver.ErrRemoteUsage),
+		errors.Is(err, deliver.ErrNonLocalSender),
+		errors.Is(err, store.ErrInvalidOutboxOffset),
+		errors.Is(err, machine.ErrUnknownMachine),
+		errors.Is(err, machine.ErrInvalidMachine),
+		errors.Is(err, store.ErrUnknownAgent),
 		errors.Is(err, store.ErrUnknownID),
-		errors.Is(err, store.ErrAmbiguousID),
-		errors.Is(err, deliver.ErrRemote):
+		errors.Is(err, store.ErrAmbiguousID):
 		return usage(err)
 	}
 	return exitError{1, err}
@@ -84,8 +89,10 @@ func run(fn func(*cobra.Command, []string) error) func(*cobra.Command, []string)
 // app is the command tree's dependencies. Tests build one with a temporary
 // state root and a fake harness.
 type app struct {
-	Root      string // state root; empty means store.DefaultRoot()
-	Harnesses harness.Set
+	Root       string // state root; empty means store.DefaultRoot()
+	Harnesses  harness.Set
+	Machines   *machine.Registry
+	startRelay func(string) error // tests can avoid starting a subprocess
 }
 
 func newApp() *app { return &app{Harnesses: harness.Default()} }
@@ -106,10 +113,13 @@ The caller's address is $RECADO_ADDR, else what the harness adapter detects.`,
 	root.PersistentFlags().Bool("json", false, "print machine-readable JSON")
 	root.AddCommand(
 		a.newSkillCmd(),
+		a.newMachineCmd(),
 		a.newSendCmd(),
 		a.newAskCmd(),
 		a.newReplyCmd(),
 		a.newDeliverCmd(),
+		a.newOutboxCmd(),
+		a.newRelayCmd(),
 		a.newInboxCmd(),
 		a.newStatusCmd(),
 		a.newAgentsCmd(),
@@ -136,7 +146,11 @@ func (a *app) service() (*deliver.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &deliver.Service{Store: st, Harnesses: a.Harnesses}, nil
+	r, err := a.machineRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return &deliver.Service{Store: st, Harnesses: a.Harnesses, Machines: r}, nil
 }
 
 // whoami is RECADO_ADDR, else what a harness adapter detects.

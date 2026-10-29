@@ -12,12 +12,18 @@ import (
 	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/harness"
+	"github.com/vieitesss/recado/internal/machine"
 )
 
 func newTestApp(t *testing.T, queues bool) (*app, *harness.Fake) {
 	t.Helper()
 	fake := &harness.Fake{Dir: t.TempDir(), Queue: queues}
-	return &app{Root: filepath.Join(t.TempDir(), "state"), Harnesses: harness.Set{fake}}, fake
+	return &app{
+		Root:       filepath.Join(t.TempDir(), "state"),
+		Harnesses:  harness.Set{fake},
+		Machines:   &machine.Registry{Path: filepath.Join(t.TempDir(), "recado", "machines.toml"), Kinds: machine.DefaultKinds()},
+		startRelay: func(string) error { return nil },
+	}, fake
 }
 
 // exec runs one command line, the way main does, and returns its output.
@@ -288,6 +294,38 @@ func TestDrainPrintsWhatItCouldNotPush(t *testing.T) {
 	}
 }
 
+func TestFixtureIgnoresXDGMachineRegistry(t *testing.T) {
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	path := filepath.Join(config, "recado", "machines.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[machines.rpi]\nkind = \"docker\"\ntarget = \"rpi\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "transport-called")
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte("#!/bin/sh\ntouch \""+marker+"\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	a, _ := newTestApp(t, false)
+	t.Setenv("RECADO_ADDR", "worker")
+	out := decode[struct {
+		Machines []machine.Machine `json:"machines"`
+	}](t, mustExec(t, a, "", "machine", "ls", "--json"))
+	if len(out.Machines) != 0 {
+		t.Errorf("fixture listed external machines: %+v", out.Machines)
+	}
+	if _, err := exec(t, a, "", "send", "rpi/worker", "hi"); exitCode(err) != 2 {
+		t.Errorf("external machine: exit %d, want 2 (err %v)", exitCode(err), err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("external transport was invoked or could not be checked: %v", err)
+	}
+}
+
 func TestUnknownNamesExitTwo(t *testing.T) {
 	a, _ := newTestApp(t, true)
 	startSession(t, a, "worker")
@@ -305,6 +343,20 @@ func TestUnknownNamesExitTwo(t *testing.T) {
 		{"inbox", "--as", "rpi/worker"},
 	}
 	for _, args := range cases {
+		if _, err := exec(t, a, "", args...); exitCode(err) != 2 {
+			t.Errorf("recado %s: exit %d, want 2 (err %v)", strings.Join(args, " "), exitCode(err), err)
+		}
+	}
+}
+
+func TestNonLocalSenderIsUsageError(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	t.Setenv("RECADO_ADDR", "rpi/sender")
+	for _, args := range [][]string{
+		{"reply", "abcd", "hi"},
+		{"send", "recado+upstream://host/worker", "hi"},
+		{"send", "other/worker", "hi"},
+	} {
 		if _, err := exec(t, a, "", args...); exitCode(err) != 2 {
 			t.Errorf("recado %s: exit %d, want 2 (err %v)", strings.Join(args, " "), exitCode(err), err)
 		}

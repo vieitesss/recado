@@ -284,7 +284,7 @@ func TestAppendReceiptRejectsUnknownState(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = s.appendReceipts("sub-1", []receipt{{ID: ulidA, State: "lost", TS: envelope.FormatTime(time.Now())}})
-	unlock(f)
+	Unlock(f)
 	if err == nil {
 		t.Fatal("appendReceipts recorded a state recado does not have")
 	}

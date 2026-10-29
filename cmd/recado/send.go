@@ -22,7 +22,7 @@ func (a *app) newSendCmd() *cobra.Command {
 		Long: `Send a message to another agent and return: recado owns delivery from then on.
 
 TEXT may be "-" to read the body from stdin. A bare TO means this machine;
-recado://<machine>/<id> is accepted too, but machines are not supported yet.`,
+recado://<machine>/<id> sends through a configured machine.`,
 		Args: cobra.ExactArgs(2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			body, err := readBody(cmd, args[1])
@@ -84,6 +84,13 @@ copies its meta. Always name the message: never "the last question".`,
 			if err != nil {
 				return err
 			}
+			to, err := addr.Parse(res.Message.Envelope.To)
+			if err != nil {
+				return err
+			}
+			if err := a.startReturnRelay(to, from.Agent); err != nil {
+				return err
+			}
 			return printSent(cmd, view(res))
 		}),
 	}
@@ -108,6 +115,9 @@ func (a *app) send(cmd *cobra.Command, toArg, kind, body string, meta map[string
 	}
 	res, err := svc.Deliver(env)
 	if err != nil {
+		return err
+	}
+	if err := a.startReturnRelay(to, from.Agent); err != nil {
 		return err
 	}
 	return printSent(cmd, view(res))

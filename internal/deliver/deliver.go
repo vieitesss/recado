@@ -6,21 +6,23 @@ package deliver
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/envelope"
 	"github.com/vieitesss/recado/internal/harness"
+	"github.com/vieitesss/recado/internal/machine"
 	"github.com/vieitesss/recado/internal/store"
 )
 
-// ErrRemote is returned for addresses on another machine: only local delivery
-// exists so far.
-var ErrRemote = errors.New("machines not supported yet")
+// ErrNonLocalSender means the route requires an identity on this machine.
+var ErrNonLocalSender = errors.New("sender must be local")
 
 // Service delivers messages through the store and the known harnesses.
 type Service struct {
 	Store     *store.Store
 	Harnesses harness.Set
+	Machines  *machine.Registry
 }
 
 // Result is what a delivery did with one envelope. The message carries the
@@ -43,8 +45,21 @@ func (s *Service) Deliver(env envelope.Envelope) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if !from.IsLocal() || !to.IsLocal() {
-		return Result{}, fmt.Errorf("%w: %s -> %s", ErrRemote, from, to)
+	if to.Upstream {
+		if !from.IsLocal() {
+			return Result{}, fmt.Errorf("%w for upstream send: %s", ErrNonLocalSender, from)
+		}
+		if err := s.Store.AppendOutbox(env); err != nil {
+			return Result{}, err
+		}
+		// The recipient's shortest unique suffix is not known on this machine.
+		return Result{Message: store.Message{Envelope: env, Short: strings.ToLower(env.ID), State: store.StateStored}}, nil
+	}
+	if !to.IsLocal() {
+		if !from.IsLocal() {
+			return Result{}, fmt.Errorf("%w for remote send: %s", ErrNonLocalSender, from)
+		}
+		return s.deliverRemote(env, from, to)
 	}
 	// Reject an unknown recipient before touching its mailbox; deliver reads
 	// it again under the lock.
@@ -140,7 +155,7 @@ func (s *Service) release(id string, msgs []store.Message) error {
 // message's sender, carries its id in reply_to, and copies its meta.
 func (s *Service) Reply(from addr.Address, query, body string) (Result, error) {
 	if !from.IsLocal() {
-		return Result{}, fmt.Errorf("%w: sending from %s", ErrRemote, from)
+		return Result{}, fmt.Errorf("%w for reply: %s", ErrNonLocalSender, from)
 	}
 	msg, err := s.Store.Resolve(from.Agent, query)
 	if err != nil {

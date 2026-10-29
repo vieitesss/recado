@@ -102,6 +102,9 @@ func ensureDir(path string) error {
 	return os.Chmod(path, DirMode)
 }
 
+// Root is the state directory used by this store.
+func (s *Store) Root() string { return s.root }
+
 // Message is one stored envelope, its current state, and the short id it has
 // in its mailbox.
 type Message struct {
@@ -122,7 +125,7 @@ func (s *Store) Append(id string, env envelope.Envelope) error {
 	if err != nil {
 		return err
 	}
-	defer unlock(f)
+	defer Unlock(f)
 	envs, err := readInbox(f)
 	if err != nil {
 		return err
@@ -132,7 +135,7 @@ func (s *Store) Append(id string, env envelope.Envelope) error {
 			return nil
 		}
 	}
-	if err := trimTail(f); err != nil {
+	if err := TrimTail(f); err != nil {
 		return err
 	}
 	if _, err := f.Write(line); err != nil {
@@ -148,7 +151,7 @@ func (s *Store) Messages(id string) ([]Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer unlock(f)
+	defer Unlock(f)
 	return s.messagesLocked(f, id)
 }
 
@@ -218,7 +221,7 @@ func (s *Store) Claim(id, msgID string) (Message, bool, error) {
 	if err != nil {
 		return Message{}, false, err
 	}
-	defer unlock(f)
+	defer Unlock(f)
 	msgs, err := s.messagesLocked(f, id)
 	if err != nil {
 		return Message{}, false, err
@@ -244,7 +247,7 @@ func (s *Store) ClaimPending(id string) ([]Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer unlock(f)
+	defer Unlock(f)
 	msgs, err := s.messagesLocked(f, id)
 	if err != nil {
 		return nil, err
@@ -273,7 +276,7 @@ func (s *Store) Release(id, msgID string) error {
 	if err != nil {
 		return err
 	}
-	defer unlock(f)
+	defer Unlock(f)
 	msgs, err := s.messagesLocked(f, id)
 	if err != nil {
 		return err
@@ -295,7 +298,7 @@ func (s *Store) MarkQueuedRead(id string) error {
 	if err != nil {
 		return err
 	}
-	defer unlock(f)
+	defer Unlock(f)
 	msgs, err := s.messagesLocked(f, id)
 	if err != nil {
 		return err
@@ -356,7 +359,7 @@ func (s *Store) lockMailbox(id string, how int) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return lockFile(filepath.Join(dir, "inbox.jsonl"), os.O_RDWR|os.O_APPEND|os.O_CREATE, how)
+	return LockFile(filepath.Join(dir, "inbox.jsonl"), os.O_RDWR|os.O_APPEND|os.O_CREATE, how)
 }
 
 // LockDelivery takes id's delivery lock: the one lock that covers reading the
@@ -367,15 +370,15 @@ func (s *Store) LockDelivery(id string) (release func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := lockFile(filepath.Join(dir, "delivery.lock"), os.O_RDWR|os.O_CREATE, syscall.LOCK_EX)
+	f, err := LockFile(filepath.Join(dir, "delivery.lock"), os.O_RDWR|os.O_CREATE, syscall.LOCK_EX)
 	if err != nil {
 		return nil, err
 	}
-	return func() { unlock(f) }, nil
+	return func() { Unlock(f) }, nil
 }
 
-// lockFile opens path at FileMode and takes how's flock on it.
-func lockFile(path string, flag, how int) (*os.File, error) {
+// LockFile opens path at FileMode and takes how's flock on it. The caller must Unlock it.
+func LockFile(path string, flag, how int) (*os.File, error) {
 	f, err := os.OpenFile(path, flag, FileMode)
 	if err != nil {
 		return nil, err
@@ -406,7 +409,8 @@ func (s *Store) mailboxDir(id string) (string, error) {
 	return dir, nil
 }
 
-func unlock(f *os.File) {
+// Unlock releases a flock and closes its file.
+func Unlock(f *os.File) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	_ = f.Close()
 }
@@ -507,7 +511,7 @@ func (s *Store) appendReceipts(id string, receipts []receipt) error {
 	if err := f.Chmod(FileMode); err != nil {
 		return err
 	}
-	if err := trimTail(f); err != nil {
+	if err := TrimTail(f); err != nil {
 		return err
 	}
 	info, err := f.Stat()
@@ -532,10 +536,10 @@ func (s *Store) writeReceipts(f *os.File, data []byte) (int, error) {
 	return s.write(f, data)
 }
 
-// trimTail truncates f to its last complete line, so the next append never
-// concatenates onto a record a crashed writer left torn. The caller holds the
-// mailbox lock exclusively.
-func trimTail(f *os.File) error {
+// TrimTail truncates f to its last complete line, so the next append never
+// concatenates onto a record a crashed writer left torn. The caller must hold
+// the file's corresponding lock exclusively.
+func TrimTail(f *os.File) error {
 	info, err := f.Stat()
 	if err != nil {
 		return err

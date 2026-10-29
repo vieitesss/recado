@@ -323,8 +323,8 @@ func TestRemoteRecipientIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Deliver(env); !errors.Is(err, ErrRemote) {
-		t.Errorf("Deliver(remote) error = %v, want ErrRemote", err)
+	if _, err := f.svc.Deliver(env); err == nil {
+		t.Error("Deliver(remote) without a machine registry succeeded")
 	}
 }
 
