@@ -683,7 +683,7 @@ func TestHoldHandsPendingMessagesBackWithoutPushing(t *testing.T) {
 		}
 	}
 
-	held, err := f.svc.Hold("worker", false)
+	held, err := f.svc.Hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +713,7 @@ func TestHoldHandsPendingMessagesBackWithoutPushing(t *testing.T) {
 	if err := f.svc.TurnStart("worker"); err != nil {
 		t.Fatal(err)
 	}
-	again, err := f.svc.Hold("worker", false)
+	again, err := f.svc.Hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +726,7 @@ func TestHoldRecordsIdleWhenNothingIsPending(t *testing.T) {
 	f := setup(t, false)
 	f.register(t, "worker", os.Getpid(), store.AgentBusy)
 
-	held, err := f.svc.Hold("worker", false)
+	held, err := f.svc.Hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -742,40 +742,16 @@ func TestHoldRecordsIdleWhenNothingIsPending(t *testing.T) {
 	}
 }
 
-// TestHoldKeepsAForeignContinuationBusy: a stop hook that starts another turn
-// is a turn recado never saw a prompt for, and it may start as many of them as
-// it likes. Publishing idle when it ends would let a push land inside a turn
-// that is still going, so only a continuation recado asked for settles.
-func TestHoldKeepsAForeignContinuationBusy(t *testing.T) {
-	f := setup(t, false)
-	f.register(t, "worker", os.Getpid(), store.AgentBusy)
-
-	held, err := f.svc.Hold("worker", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(held.Pushed)+len(held.Pending) != 0 {
-		t.Fatalf("Hold = %+v, want nothing to hand back", held)
-	}
-	agent, err := f.st.Lookup("worker")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if agent.State != store.AgentBusy {
-		t.Fatalf("agent state = %q, want busy: the turn was someone else's continuation", agent.State)
-	}
-}
-
-// TestHoldKeepsHandingOverDuringAContinuation: a continuation never settles the
-// agent, but it is still a turn, so the messages waiting in the mailbox go out
-// at each of its ends; only a turn that began with a prompt publishes idle.
-func TestHoldKeepsHandingOverDuringAContinuation(t *testing.T) {
+// TestHoldHandsOverAtEachTurnEnd: messages waiting in the mailbox go out at
+// every turn end, including the end of the turn a hand-over started, and the
+// first end with nothing waiting publishes idle.
+func TestHoldHandsOverAtEachTurnEnd(t *testing.T) {
 	f := setup(t, false)
 	f.register(t, "worker", os.Getpid(), store.AgentBusy)
 	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "first", nil)); err != nil {
 		t.Fatal(err)
 	}
-	held, err := f.svc.Hold("worker", false)
+	held, err := f.svc.Hold("worker")
 	if err != nil || len(held.Pending) != 1 || held.Pending[0].Envelope.Body != "first" {
 		t.Fatalf("first Hold = %+v, %v; want the first message handed over", held, err)
 	}
@@ -783,7 +759,7 @@ func TestHoldKeepsHandingOverDuringAContinuation(t *testing.T) {
 	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "second", nil)); err != nil {
 		t.Fatal(err)
 	}
-	cont, err := f.svc.Hold("worker", true)
+	cont, err := f.svc.Hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,11 +770,11 @@ func TestHoldKeepsHandingOverDuringAContinuation(t *testing.T) {
 		t.Fatalf("agent state = %q, %v; want busy", agent.State, err)
 	}
 
-	// The next prompt's end is recado's proof the turn really settled.
-	if _, err := f.svc.Hold("worker", false); err != nil {
+	// The first end with nothing waiting settles the agent.
+	if _, err := f.svc.Hold("worker"); err != nil {
 		t.Fatal(err)
 	}
 	if agent, err := f.st.Lookup("worker"); err != nil || agent.State != store.AgentIdle {
-		t.Fatalf("agent state = %q, %v; want idle after a prompt's turn end", agent.State, err)
+		t.Fatalf("agent state = %q, %v; want idle after an end with nothing waiting", agent.State, err)
 	}
 }

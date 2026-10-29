@@ -324,18 +324,14 @@ func TestClaudeAgentIDFromHookInput(t *testing.T) {
 	}
 }
 
-func TestClaudeHookReadsSessionAndContinuationIndependently(t *testing.T) {
-	for _, tc := range []struct {
-		input        string
-		id           string
-		continuation bool
-	}{
-		{`{"session_id":"abcd1234","stop_hook_active":"invalid"}`, "abcd1234", false},
-		{`{"session_id":42,"stop_hook_active":true}`, "", true},
+func TestClaudeHookReadsTheSessionFromItsInput(t *testing.T) {
+	for _, tc := range []struct{ input, id string }{
+		{`{"session_id":"abcd1234","stop_hook_active":"invalid"}`, "abcd1234"},
+		{`{"session_id":42,"stop_hook_active":true}`, ""},
 	} {
 		plan, err := (&Claude{}).PrepareHook(HookRequest{Event: "turn-end", Hold: true, Input: strings.NewReader(tc.input)})
-		if err != nil || plan.AgentID != tc.id || plan.Continuation != tc.continuation {
-			t.Errorf("PrepareHook(%s) = id %q, continuation %v, %v; want %q, %v", tc.input, plan.AgentID, plan.Continuation, err, tc.id, tc.continuation)
+		if err != nil || plan.AgentID != tc.id {
+			t.Errorf("PrepareHook(%s) = id %q, %v; want %q", tc.input, plan.AgentID, err, tc.id)
 		}
 	}
 }

@@ -36,11 +36,10 @@ func (*dialectHarness) PrepareHook(req harness.HookRequest) (harness.HookPlan, e
 		event = "turn-end"
 	}
 	plan := harness.HookPlan{
-		Event:        event,
-		AgentID:      strings.TrimSpace(string(input)),
-		KeepPending:  event == "session-start",
-		HoldTurn:     event == "turn-end",
-		Continuation: event == "turn-end",
+		Event:       event,
+		AgentID:     strings.TrimSpace(string(input)),
+		KeepPending: event == "session-start",
+		HoldTurn:    event == "turn-end",
 		Configure: func(agent *store.Agent) error {
 			agent.Endpoint = "dialect endpoint"
 			agent.State = store.AgentBusy
@@ -123,8 +122,8 @@ func TestAdapterOwnsHookDialect(t *testing.T) {
 		t.Errorf("empty continuation response = %q", got)
 	}
 	agent, err = st.Lookup("worker")
-	if err != nil || agent.State != store.AgentBusy {
-		t.Errorf("continuation agent = %+v, %v; want busy", agent, err)
+	if err != nil || agent.State != store.AgentIdle {
+		t.Errorf("agent after an empty hand-over = %+v, %v; want idle", agent, err)
 	}
 	if pushes, err := fake.Pushes(); err != nil || len(pushes) != 0 {
 		t.Errorf("pushed %d messages, %v; the hook must hand them over", len(pushes), err)

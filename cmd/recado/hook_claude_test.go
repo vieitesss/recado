@@ -245,11 +245,11 @@ func TestFailedClaudeHooksDoNotBlockTheHuman(t *testing.T) {
 	})
 }
 
-// TestClaudeStopHookLeavesAContinuationBusy: a Stop that runs because a stop
-// hook blocked is a continuation recado cannot see the end of, and the hook may
-// block again. Publishing idle there would let the next message be pushed into a
-// turn that is still running, so the agent stays busy until a prompt's end.
-func TestClaudeStopHookLeavesAContinuationBusy(t *testing.T) {
+// TestClaudeStopHookEndingAHandOverRecordsIdle: the Stop that ends the turn a
+// hand-over started finds nothing waiting and records the session idle, so the
+// next message is pushed at once instead of waiting for a prompt that may never
+// come.
+func TestClaudeStopHookEndingAHandOverRecordsIdle(t *testing.T) {
 	a := newClaudeApp(t)
 	sock, lines := listenInbox(t)
 	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", sock)
@@ -264,21 +264,19 @@ func TestClaudeStopHookLeavesAContinuationBusy(t *testing.T) {
 		t.Fatalf("Stop = %q, want the waiting message", got)
 	}
 
-	// The continuation ends with nothing waiting, and says a stop hook started
-	// it. The hook stays silent, so Claude Code is free to stop.
+	// The turn the hand-over started ends with nothing waiting; the hook stays
+	// silent so Claude Code can stop.
 	cont := `{"session_id":"01a177db-2b83-77ac-9faa-a97df881c9ee","hook_event_name":"Stop","stop_hook_active":true}`
 	if out := mustExec(t, a, cont, "hook", "claude", "turn-end", "--hold"); out != "" {
-		t.Errorf("Stop of a continuation = %q, want no output", out)
+		t.Errorf("Stop of a hand-over turn = %q, want no output", out)
 	}
 
-	// Still busy: the next message waits for a prompt's turn end instead of
-	// landing inside whatever turn that hook started.
 	t.Setenv("RECADO_ADDR", "asker")
-	mustExec(t, a, "", "send", "worker", "after the continuation")
+	mustExec(t, a, "", "send", "worker", "after the hand-over")
 	select {
-	case got := <-lines:
-		t.Fatalf("socket received %q, want the message held while the agent is busy", got)
-	case <-time.After(200 * time.Millisecond):
+	case <-lines:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the message was not pushed: the session stayed busy after the hand-over turn")
 	}
 }
 

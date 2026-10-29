@@ -102,12 +102,6 @@ func (c *Claude) PrepareHook(req HookRequest) (HookPlan, error) {
 			plan.AgentID = id
 		}
 	}
-	if plan.HoldTurn {
-		var stop struct {
-			Active bool `json:"stop_hook_active"`
-		}
-		plan.Continuation = json.Unmarshal(input, &stop) == nil && stop.Active
-	}
 	return plan, nil
 }
 

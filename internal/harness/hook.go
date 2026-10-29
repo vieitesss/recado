@@ -24,7 +24,6 @@ type HookPlan struct {
 	Configure     func(*store.Agent) error
 	KeepPending   bool // release messages a session start cannot hand over
 	HoldTurn      bool // claim messages without pushing into the ending turn
-	Continuation  bool // a held turn may have started another unseen turn
 	WriteResponse func(w io.Writer, pushed, pending []store.Message, json bool) error
 }
 

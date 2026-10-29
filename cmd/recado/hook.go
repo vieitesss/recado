@@ -111,7 +111,7 @@ func (a *app) runHook(cmd *cobra.Command, h harness.Harness, req harness.HookReq
 		}
 		var drained deliver.Drained
 		if plan.HoldTurn {
-			drained, err = svc.Hold(id, plan.Continuation)
+			drained, err = svc.Hold(id)
 		} else {
 			drained, err = svc.TurnEnd(id)
 		}

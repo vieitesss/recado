@@ -155,16 +155,13 @@ wait in its mailbox and arrive when a session with that id starts again.
 `recado hook HARNESS turn-start|turn-end` rewrites the entry atomically
 (temp file and rename, `0600`) with `state` (`busy` or `idle`) and `state_ts`
 (RFC 3339). An entry without them has never reported a turn, which a harness
-that cannot queue mid-turn treats as not idle. A turn-end hook whose input
-says a stop hook started the turn (`stop_hook_active`, Claude Code's Stop) is
-a continuation recado cannot see the end of: the hook may block again and
-start another turn, so that turn end leaves the agent `busy`. The cost is a
-state that can lag, since after recado's own hand-over the session stays
-`busy` until the next prompt ends; delivery through the stop hook keeps
-working in the meantime. A Stop with `stop_hook_active=false` records idle to
-allow socket wake, but a later Stop hook may start a continuation after that
-recording: in that case idle can be wrong and a socket push can enter the
-running continuation. A Stop with `stop_hook_active=true` stays busy.
+that cannot queue mid-turn treats as not idle. A turn-end hook that
+finds nothing waiting records the agent idle, including at the end of the
+turn recado's own hand-over started (Claude Code's Stop with
+`stop_hook_active`): that turn fires no prompt hook, so no later end would
+come to settle the agent, and every message sent meanwhile would wait. A
+different Stop hook that blocks again can make idle wrong, and a socket push
+then enters the running turn.
 
 ## Delivery
 

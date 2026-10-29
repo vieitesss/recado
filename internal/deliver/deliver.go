@@ -205,17 +205,13 @@ func (s *Service) drainLocked(id string) (Drained, error) {
 // the messages to the agent itself. A turn-end hook is the case: the turn it
 // runs in is still running, so pushing would land the message inside that turn
 // instead of the next one. The messages come back claimed, in order, for the
-// caller to hand over; the agent is recorded idle only when nothing was waiting
-// and the turn really settled, which continuation reports.
-//
-// continuation says the turn that just ended was started by a stop hook rather
-// than by a prompt. A harness runs those in a loop: the hook may block again,
-// and recado sees neither that decision nor the turn it starts. Publishing idle
-// at such a turn's end would let a push land inside a turn recado never saw
-// begin, so the agent stays busy. The cost is a status that can lag: after
-// recado's own hand-over the session stays busy until the next prompt ends,
-// while the stop hook keeps handing messages over in the meantime.
-func (s *Service) Hold(id string, continuation bool) (Drained, error) {
+// caller to hand over; the agent is recorded idle when nothing was waiting.
+// That holds for the end of a turn a stop hook started too: recado's own
+// hand-over starts one, and leaving the agent busy then would strand every
+// later message until a prompt, since no turn end would come to drain it. A
+// foreign stop hook that blocks again can make idle wrong, and a push then
+// lands in the running turn, which Claude Code takes at its next step.
+func (s *Service) Hold(id string) (Drained, error) {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
 		return Drained{}, err
@@ -230,9 +226,6 @@ func (s *Service) Hold(id string, continuation bool) (Drained, error) {
 	}
 	if len(msgs) > 0 {
 		return Drained{Pending: msgs}, nil
-	}
-	if continuation {
-		return Drained{}, nil
 	}
 	return Drained{}, s.Store.SetState(id, store.AgentIdle)
 }
