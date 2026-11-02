@@ -40,8 +40,8 @@ type Envelope struct {
 	V       int               `json:"v"`
 	ID      string            `json:"id"`
 	TS      time.Time         `json:"ts"`
-	From    string            `json:"from"`
-	To      string            `json:"to"`
+	From    addr.Address      `json:"from"`
+	To      addr.Address      `json:"to"`
 	Kind    string            `json:"kind"`
 	Body    string            `json:"body"`
 	ReplyTo string            `json:"reply_to"`
@@ -60,18 +60,12 @@ func New(from, to addr.Address, kind, body string, meta map[string]string) (Enve
 	if err := validMeta(meta); err != nil {
 		return Envelope{}, err
 	}
-	if _, err := addr.Parse(from.String()); err != nil {
-		return Envelope{}, fmt.Errorf("from: %w", err)
-	}
-	if _, err := addr.Parse(to.String()); err != nil {
-		return Envelope{}, fmt.Errorf("to: %w", err)
-	}
 	return Envelope{
 		V:    Version,
 		ID:   NewID(),
 		TS:   time.Now().UTC().Truncate(time.Millisecond),
-		From: from.String(),
-		To:   to.String(),
+		From: from,
+		To:   to,
 		Kind: kind,
 		Body: body,
 		Meta: copyMeta(meta),
@@ -120,8 +114,8 @@ func Decode(line []byte) (Envelope, error) {
 		V:       wire.V,
 		ID:      id.String(),
 		TS:      ts.UTC(),
-		From:    from.String(),
-		To:      to.String(),
+		From:    from,
+		To:      to,
 		Kind:    strings.TrimSpace(wire.Kind),
 		Body:    wire.Body,
 		ReplyTo: wire.ReplyTo,
@@ -181,8 +175,8 @@ func (e Envelope) MarshalJSON() ([]byte, error) {
 		V:       e.V,
 		ID:      e.ID,
 		TS:      FormatTime(e.TS),
-		From:    e.From,
-		To:      e.To,
+		From:    e.From.String(),
+		To:      e.To.String(),
 		Kind:    e.Kind,
 		Body:    e.Body,
 		ReplyTo: e.ReplyTo,
@@ -190,27 +184,13 @@ func (e Envelope) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// UnmarshalJSON reads the wire form; Decode owns validation.
+// UnmarshalJSON reads the wire form with the same validation as Decode.
 func (e *Envelope) UnmarshalJSON(data []byte) error {
-	var wire wireEnvelope
-	if err := json.Unmarshal(data, &wire); err != nil {
+	env, err := Decode(data)
+	if err != nil {
 		return err
 	}
-	ts, err := ParseTime(wire.TS)
-	if err != nil {
-		return fmt.Errorf("ts %q: %w", wire.TS, err)
-	}
-	*e = Envelope{
-		V:       wire.V,
-		ID:      wire.ID,
-		TS:      ts.UTC(),
-		From:    wire.From,
-		To:      wire.To,
-		Kind:    wire.Kind,
-		Body:    wire.Body,
-		ReplyTo: wire.ReplyTo,
-		Meta:    copyMeta(wire.Meta),
-	}
+	*e = env
 	return nil
 }
 
@@ -230,7 +210,7 @@ type wireEnvelope struct {
 // message's short id in the recipient's mailbox.
 func Render(e Envelope, short string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[recado] from %s · %s", display(e.From), e.Kind)
+	fmt.Fprintf(&b, "[recado] from %s · %s", e.From.Display(), e.Kind)
 	if len(e.Meta) > 0 {
 		b.WriteString(" ·")
 		keys := make([]string, 0, len(e.Meta))
@@ -251,13 +231,6 @@ func Render(e Envelope, short string) string {
 		fmt.Fprintf(&b, "\nreply with: recado reply %s \"…\"", short)
 	}
 	return b.String()
-}
-
-func display(from string) string {
-	if a, err := addr.Parse(from); err == nil {
-		return a.Display()
-	}
-	return from
 }
 
 func copyMeta(m map[string]string) map[string]string {

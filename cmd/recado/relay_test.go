@@ -30,7 +30,7 @@ func TestRelayDrainsRewritesAndResumes(t *testing.T) {
 	got = decode[struct {
 		Messages []message `json:"messages"`
 	}](t, mustExec(t, local, "", "inbox", "--peek", "--json"))
-	if len(got.Messages) != 1 || got.Messages[0].Envelope.From != "recado://rpi/worker" || got.Messages[0].Envelope.To != "recado://local/manager" || got.Messages[0].Envelope.Body != "answer" {
+	if len(got.Messages) != 1 || got.Messages[0].Envelope.From.String() != "recado://rpi/worker" || got.Messages[0].Envelope.To.String() != "recado://local/manager" || got.Messages[0].Envelope.Body != "answer" {
 		t.Fatalf("messages = %+v", got.Messages)
 	}
 	mustExec(t, local, "", "relay", "rpi")

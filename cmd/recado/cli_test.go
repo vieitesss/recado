@@ -213,7 +213,7 @@ func TestRepliesReachTheRightAsker(t *testing.T) {
 		if answer.Body != c.body || answer.Kind != "answer" {
 			t.Errorf("%s got %q (%s), want %q", c.asker, answer.Body, answer.Kind, c.body)
 		}
-		if answer.To != "recado://local/"+c.asker {
+		if answer.To.String() != "recado://local/"+c.asker {
 			t.Errorf("%s answer went to %s", c.asker, answer.To)
 		}
 		if answer.ReplyTo != c.q.id {

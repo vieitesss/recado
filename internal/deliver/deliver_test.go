@@ -354,7 +354,7 @@ func TestRepliesReachTheRightAsker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.Message.Envelope.To != addr.Local(asker).String() {
+		if res.Message.Envelope.To != addr.Local(asker) {
 			t.Errorf("reply to %s went to %s", asker, res.Message.Envelope.To)
 		}
 	}
@@ -374,7 +374,7 @@ func TestRepliesReachTheRightAsker(t *testing.T) {
 		if answer.Body != "answer for "+asker {
 			t.Errorf("%s got %q, want its own answer", asker, answer.Body)
 		}
-		if answer.From != addr.Local("worker").String() {
+		if answer.From != addr.Local("worker") {
 			t.Errorf("%s got from %q, want the worker", asker, answer.From)
 		}
 		question := questions[asker]

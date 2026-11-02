@@ -84,11 +84,7 @@ copies its meta. Always name the message: never "the last question".`,
 			if err != nil {
 				return err
 			}
-			to, err := addr.Parse(res.Message.Envelope.To)
-			if err != nil {
-				return err
-			}
-			if err := a.startReturnRelay(to, from.Agent); err != nil {
+			if err := a.startReturnRelay(res.Message.Envelope.To, from.Agent); err != nil {
 				return err
 			}
 			return printSent(cmd, view(res))

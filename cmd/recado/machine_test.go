@@ -148,7 +148,7 @@ func TestRemoteSendDeliversRewrittenEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env.To != "recado://local/sub-1" || env.From != "recado+upstream://"+host+"/manager" || env.Body != "hello" || env.Kind != "question" || env.Meta["item"] != "x" || env.ID != result.ID || inbox.Messages[0].Short != result.Short {
+	if env.To.String() != "recado://local/sub-1" || env.From.String() != "recado+upstream://"+host+"/manager" || env.Body != "hello" || env.Kind != "question" || env.Meta["item"] != "x" || env.ID != result.ID || inbox.Messages[0].Short != result.Short {
 		t.Errorf("remote envelope = %+v, result = %+v", env, result)
 	}
 	mustExec(t, remote, "", "reply", result.Short, "answer")

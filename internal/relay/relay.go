@@ -226,9 +226,9 @@ func liveSenders(f *os.File, st *store.Store) (bool, error) {
 }
 
 type frame struct {
-	Offset   int64              `json:"offset"`
-	Envelope *envelope.Envelope `json:"envelope"`
-	CaughtUp bool               `json:"caught_up"`
+	Offset   int64           `json:"offset"`
+	Envelope json.RawMessage `json:"envelope"`
+	CaughtUp bool            `json:"caught_up"`
 }
 
 func pull(ctx context.Context, svc *deliver.Service, machine, host, base string, cursor *int64, log *os.File, idle func() (bool, error)) (bool, bool, error) {
@@ -270,24 +270,18 @@ func pull(ctx context.Context, svc *deliver.Service, machine, host, base string,
 			return false, progressed, fmt.Errorf("outbox offset moved backwards")
 		}
 		if f.Envelope != nil {
-			raw, err := f.Envelope.Line()
+			env, err := envelope.Decode(f.Envelope)
 			if err != nil {
 				return false, progressed, err
 			}
-			env, err := envelope.Decode(raw)
-			if err != nil {
-				return false, progressed, err
-			}
-			from, err := addr.Parse(env.From)
-			if err != nil || !from.IsLocal() {
+			if !env.From.IsLocal() {
 				return false, progressed, fmt.Errorf("invalid remote sender %q", env.From)
 			}
-			to, err := addr.Parse(env.To)
-			if err != nil || !to.Upstream || to.Machine != host {
+			if !env.To.Upstream || env.To.Machine != host {
 				return false, progressed, fmt.Errorf("invalid upstream recipient %q", env.To)
 			}
-			env.From = addr.Address{Machine: machine, Agent: from.Agent}.String()
-			env.To = addr.Local(to.Agent).String()
+			env.From = addr.Address{Machine: machine, Agent: env.From.Agent}
+			env.To = addr.Local(env.To.Agent)
 			if _, err = svc.Deliver(env); err != nil {
 				return false, progressed, err
 			}
