@@ -163,6 +163,13 @@ come to settle the agent, and every message sent meanwhile would wait. A
 different Stop hook that blocks again can make idle wrong, and a socket push
 then enters the running turn.
 
+`cwd` is the directory the session-start hook ran in, a snapshot taken at
+registration and not the session's live directory. `recado agents --json`
+prints it for scripts and omits the key when an entry has none. It can be
+stale or too broad: Claude Code's goes stale after `cd` or entering a
+worktree, and OpenCode's is the shared server's directory. Treat it as a hint
+and let a person confirm anything chosen from it.
+
 ## Delivery
 
 Delivering is one operation, whoever runs it (`send` locally, `deliver` on a

@@ -434,6 +434,46 @@ func TestHookRegistersAgent(t *testing.T) {
 	}
 }
 
+func TestAgentsJSONShowsCWD(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	agentsDir := filepath.Join(a.Root, "agents")
+	if err := os.MkdirAll(agentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	records := map[string]string{
+		"with-cwd": `{"harness":"fake","endpoint":"/secret/endpoint.sock","token":"secret-token","pid":1,"cwd":"/work/tree","started":"2026-01-01T00:00:00Z"}`,
+		"old":      `{"harness":"fake","endpoint":"/secret/endpoint.sock","token":"secret-token","pid":1,"started":"2026-01-01T00:00:00Z"}`,
+	}
+	for id, record := range records {
+		if err := os.WriteFile(filepath.Join(agentsDir, id+".json"), []byte(record), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	raw := mustExec(t, a, "", "agents", "--json")
+	out := decode[struct {
+		Agents []map[string]json.RawMessage `json:"agents"`
+	}](t, raw)
+	byID := map[string]map[string]json.RawMessage{}
+	for _, ag := range out.Agents {
+		byID[strings.Trim(string(ag["id"]), `"`)] = ag
+	}
+	if got := string(byID["with-cwd"]["cwd"]); got != `"/work/tree"` {
+		t.Errorf("with-cwd cwd = %s, want \"/work/tree\"", got)
+	}
+	if byID["old"] == nil {
+		t.Fatalf("agents = %s, want a record for old", raw)
+	}
+	if got, ok := byID["old"]["cwd"]; ok {
+		t.Errorf("old record has cwd %s, want the key absent", got)
+	}
+	for _, private := range []string{"endpoint", "token", "/secret/endpoint.sock", "secret-token"} {
+		if strings.Contains(raw, private) {
+			t.Errorf("agents --json exposes %q: %s", private, raw)
+		}
+	}
+}
+
 func TestUsageErrorExitCode(t *testing.T) {
 	a, _ := newTestApp(t, false)
 	if _, err := exec(t, a, "", "nonsense"); exitCode(err) != 2 {

@@ -126,10 +126,11 @@ func (a *app) newAgentsCmd() *cobra.Command {
 				PID     int    `json:"pid"`
 				Live    bool   `json:"live"`
 				State   string `json:"state"`
+				CWD     string `json:"cwd,omitempty"`
 			}
 			agents := make([]agent, len(list))
 			for i, ag := range list {
-				agents[i] = agent{ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(), State: string(ag.State)}
+				agents[i] = agent{ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(), State: string(ag.State), CWD: ag.CWD}
 			}
 			if jsonFlag(cmd) {
 				return printJSON(cmd, struct {
