@@ -288,7 +288,7 @@ type sent struct {
 }
 
 func view(res deliver.Result) sent {
-	return sent{ID: res.Message.Envelope.ID, Short: res.Message.Short, To: res.Message.Envelope.To, Pushed: res.Pushed}
+	return sent{ID: res.Message.Envelope.ID, Short: res.Message.Short, To: res.Message.Envelope.To.String(), Pushed: res.Pushed}
 }
 
 func printSent(cmd *cobra.Command, r sent) error {

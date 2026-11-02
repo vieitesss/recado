@@ -37,14 +37,7 @@ type Result struct {
 // Everything from reading the recipient's state to the push happens under the
 // recipient's delivery lock, so a turn boundary cannot interleave.
 func (s *Service) Deliver(env envelope.Envelope) (Result, error) {
-	from, err := addr.Parse(env.From)
-	if err != nil {
-		return Result{}, err
-	}
-	to, err := addr.Parse(env.To)
-	if err != nil {
-		return Result{}, err
-	}
+	from, to := env.From, env.To
 	if to.Upstream {
 		if !from.IsLocal() {
 			return Result{}, fmt.Errorf("%w for upstream send: %s", ErrNonLocalSender, from)
@@ -162,11 +155,7 @@ func (s *Service) Reply(from addr.Address, query, body string) (Result, error) {
 		return Result{}, err
 	}
 	orig := msg.Envelope
-	to, err := addr.Parse(orig.From)
-	if err != nil {
-		return Result{}, err
-	}
-	env, err := envelope.New(from, to, envelope.KindAnswer, body, orig.Meta)
+	env, err := envelope.New(from, orig.From, envelope.KindAnswer, body, orig.Meta)
 	if err != nil {
 		return Result{}, err
 	}

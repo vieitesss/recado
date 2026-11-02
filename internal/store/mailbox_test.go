@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/envelope"
 )
 
@@ -35,8 +36,8 @@ func message(id, body string) envelope.Envelope {
 		V:    1,
 		ID:   id,
 		TS:   time.Now().UTC().Truncate(time.Millisecond),
-		From: "recado://local/asker",
-		To:   "recado://local/sub-1",
+		From: addr.Local("asker"),
+		To:   addr.Local("sub-1"),
 		Kind: envelope.KindMessage,
 		Body: body,
 		Meta: map[string]string{},

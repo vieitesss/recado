@@ -52,8 +52,8 @@ func (s *Service) deliverRemote(env envelope.Envelope, from, to addr.Address) (R
 		return Result{}, fmt.Errorf("local hostname %q cannot be used in an upstream address: %w", host, err)
 	}
 	wire := env
-	wire.From = upstream.String()
-	wire.To = addr.Local(to.Agent).String()
+	wire.From = upstream
+	wire.To = addr.Local(to.Agent)
 	line, err := wire.Line()
 	if err != nil {
 		return Result{}, err
@@ -87,7 +87,7 @@ func (s *Service) deliverRemote(env envelope.Envelope, from, to addr.Address) (R
 	if err := json.Unmarshal(out, &response); err != nil {
 		return Result{}, fmt.Errorf("machine %q: invalid deliver response: %w", to.Machine, err)
 	}
-	if len(response.Delivered) != 1 || response.Delivered[0].ID != env.ID || response.Delivered[0].To != wire.To || response.Delivered[0].Short == "" {
+	if len(response.Delivered) != 1 || response.Delivered[0].ID != env.ID || response.Delivered[0].To != wire.To.String() || response.Delivered[0].Short == "" {
 		return Result{}, fmt.Errorf("machine %q: invalid deliver response", to.Machine)
 	}
 	r := response.Delivered[0]

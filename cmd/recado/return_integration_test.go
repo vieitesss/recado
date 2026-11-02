@@ -72,7 +72,7 @@ func TestRemoteSendStartsRelayAndReturnsReply(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(msgs) > 0 {
-			if len(msgs) != 1 || msgs[0].Envelope.Body != "answer" || msgs[0].Envelope.From != "recado://rpi/worker" {
+			if len(msgs) != 1 || msgs[0].Envelope.Body != "answer" || msgs[0].Envelope.From.String() != "recado://rpi/worker" {
 				t.Fatalf("return = %+v", msgs)
 			}
 			break

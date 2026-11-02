@@ -83,7 +83,7 @@ func TestDecodeNormalizes(t *testing.T) {
 	if env.ID != "01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7" {
 		t.Errorf("id = %q, want canonical uppercase", env.ID)
 	}
-	if env.To != "recado://local/b" {
+	if env.To != addr.Local("b") {
 		t.Errorf("to = %q, want the canonical address", env.To)
 	}
 	if env.Kind != KindMessage {
@@ -143,7 +143,7 @@ func TestRenderPlain(t *testing.T) {
 		t.Errorf("Render = %q, want %q", got, want)
 	}
 
-	env.From = "recado://rpi/subagent-build-4188"
+	env.From = addr.Address{Machine: "rpi", Agent: "subagent-build-4188"}
 	if got, want := Render(env, "abcd"), "[recado] from rpi/subagent-build-4188 · message (id abcd)\nhi"; got != want {
 		t.Errorf("Render = %q, want %q", got, want)
 	}
@@ -179,12 +179,18 @@ func TestDecodeRejectsHeaderBreakers(t *testing.T) {
 	}
 }
 
-func TestNewRejectsBadAddresses(t *testing.T) {
-	if _, err := New(addr.Address{Machine: ""}, addr.Local("b"), "", "hi", nil); err == nil {
-		t.Error("New accepted an address without a machine")
+func TestUnmarshalJSONRejectsBadAddresses(t *testing.T) {
+	good := `{"v":1,"id":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7","ts":"2026-01-01T00:00:00.000Z","from":"a","to":"b"}`
+	var ok Envelope
+	if err := json.Unmarshal([]byte(good), &ok); err != nil {
+		t.Fatalf("Unmarshal rejected a good envelope: %v", err)
 	}
-	if _, err := New(addr.Local("NotAnID"), addr.Local("b"), "", "hi", nil); err == nil {
-		t.Error("New accepted an invalid agent id")
+	for _, field := range []string{`"from":"NotAnID","to":"b"`, `"from":"a","to":"NotAnID"`, `"to":"b"`} {
+		line := `{"v":1,"id":"01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7","ts":"2026-01-01T00:00:00.000Z",` + field + `}`
+		var env Envelope
+		if err := json.Unmarshal([]byte(line), &env); err == nil {
+			t.Errorf("Unmarshal accepted %s", line)
+		}
 	}
 }
 

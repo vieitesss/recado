@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/envelope"
 )
 
@@ -97,11 +96,10 @@ func (s *Store) ReadOutbox(after int64, host string) ([]OutboxRecord, int64, err
 		if err != nil {
 			return nil, pos, fmt.Errorf("outbox at %d: %w", pos-int64(len(line)), err)
 		}
-		to, err := addr.Parse(env.To)
-		if err != nil || !to.Upstream {
+		if !env.To.Upstream {
 			return nil, pos, fmt.Errorf("invalid outbox recipient %q", env.To)
 		}
-		if to.Machine == host {
+		if env.To.Machine == host {
 			records = append(records, OutboxRecord{Offset: pos, Envelope: env})
 		}
 	}
