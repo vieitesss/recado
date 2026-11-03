@@ -196,9 +196,10 @@ extension API returns void and hides asynchronous failures, while Claude
 Code's socket has no answer at all, so either can report `queued` for a message
 that never became a turn.
 
-Claiming a message for push or drain records `queued` under the mailbox lock,
-preventing simultaneous claims. A lost acknowledgement can cause a retry of an
-already accepted message. States: `stored → queued → read`; `read` is
+Claiming messages for push, drain or inbox records `queued` under the mailbox
+lock, preventing simultaneous claims. Inbox claims all matching stored messages
+as one batch; peek only reads them. A lost acknowledgement can cause a retry of
+an already accepted message. States: `stored → queued → read`; `read` is
 recorded when the harness reports the turn started, where it can. States are
 for the TUI and debugging; senders never see them.
 

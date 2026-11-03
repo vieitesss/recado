@@ -13,7 +13,7 @@ import (
 	"github.com/vieitesss/recado/internal/envelope"
 )
 
-func TestClaimPendingClaimsOnce(t *testing.T) {
+func TestMailboxClaimsPendingOnce(t *testing.T) {
 	s, root := open(t)
 	for _, id := range []string{ulidA, ulidB, ulidC} {
 		if err := s.Append("sub-1", message(id, id)); err != nil {
@@ -21,12 +21,12 @@ func TestClaimPendingClaimsOnce(t *testing.T) {
 		}
 	}
 
-	claimed, err := s.ClaimPending("sub-1")
+	claimed, err := s.Mailbox("sub-1", MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(claimed) != 3 {
-		t.Fatalf("ClaimPending = %d messages, want 3", len(claimed))
+		t.Fatalf("Mailbox = %d messages, want 3", len(claimed))
 	}
 	for i, want := range []string{ulidA, ulidB, ulidC} {
 		if claimed[i].Envelope.ID != want || claimed[i].State != StateQueued {
@@ -34,12 +34,12 @@ func TestClaimPendingClaimsOnce(t *testing.T) {
 		}
 	}
 
-	again, err := s.ClaimPending("sub-1")
+	again, err := s.Mailbox("sub-1", MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(again) != 0 {
-		t.Fatalf("second ClaimPending = %d messages, want none: a message is delivered once", len(again))
+		t.Fatalf("second claim = %d messages, want none: a message is delivered once", len(again))
 	}
 
 	msgs, err := s.Messages("sub-1")
@@ -67,37 +67,42 @@ func TestClaimPendingClaimsOnce(t *testing.T) {
 	}
 }
 
-func TestClaimSpecificMessageAndRelease(t *testing.T) {
+func TestMailboxClaimsMatchingMessageAndRelease(t *testing.T) {
 	s, _ := open(t)
 	for _, id := range []string{ulidA, ulidB} {
-		if err := s.Append("sub-1", message(id, id)); err != nil {
+		env := message(id, id)
+		if id == ulidB {
+			env.Meta["item"] = "selected"
+		}
+		if err := s.Append("sub-1", env); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	msg, ok, err := s.Claim("sub-1", ulidB)
+	opts := MailboxOptions{Meta: map[string]string{"item": "selected"}, StoredOnly: true, Claim: true}
+	msgs, err := s.Mailbox("sub-1", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || msg.State != StateQueued || msg.Envelope.ID != ulidB {
-		t.Fatalf("Claim = %+v, %v; want %s queued", msg, ok, ulidB)
+	if len(msgs) != 1 || msgs[0].State != StateQueued || msgs[0].Envelope.ID != ulidB {
+		t.Fatalf("Mailbox = %+v, want %s queued", msgs, ulidB)
 	}
-	if _, ok, err := s.Claim("sub-1", ulidB); err != nil || ok {
-		t.Fatalf("second Claim = %v, %v; want false, nil", ok, err)
+	if again, err := s.Mailbox("sub-1", opts); err != nil || len(again) != 0 {
+		t.Fatalf("second claim = %+v, %v; want none, nil", again, err)
 	}
-	if _, ok, err := s.Claim("sub-1", "01JB7Q4W2Z6ZC9M1Z3X4Y5V6T9"); !errors.Is(err, ErrUnknownID) || ok {
-		t.Fatalf("Claim(unknown) = %v, %v; want ErrUnknownID", ok, err)
+	if err := s.Release("sub-1", "01JB7Q4W2Z6ZC9M1Z3X4Y5V6T9"); !errors.Is(err, ErrUnknownID) {
+		t.Fatalf("Release(unknown) = %v, want ErrUnknownID", err)
 	}
 
 	if err := s.Release("sub-1", ulidB); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := s.ClaimPending("sub-1")
+	claimed, err := s.Mailbox("sub-1", MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(claimed) != 2 || claimed[0].Envelope.ID != ulidA || claimed[1].Envelope.ID != ulidB {
-		t.Fatalf("after release ClaimPending = %+v, want both in append order", claimed)
+		t.Fatalf("after release claim = %+v, want both in append order", claimed)
 	}
 }
 
@@ -108,7 +113,7 @@ func TestMarkQueuedRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.ClaimPending("sub-1"); err != nil {
+	if _, err := s.Mailbox("sub-1", MailboxOptions{StoredOnly: true, Claim: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.MarkQueuedRead("sub-1"); err != nil {
@@ -177,7 +182,7 @@ func TestAppendReceiptRepairsATornTrailingRecord(t *testing.T) {
 	if err := s.Append("sub-1", message(ulidA, "first")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Claim("sub-1", ulidA); err != nil {
+	if _, err := s.Mailbox("sub-1", MailboxOptions{StoredOnly: true, Claim: true}); err != nil {
 		t.Fatal(err)
 	}
 	receipts := filepath.Join(root, "mail", "sub-1", "receipts.jsonl")
@@ -205,7 +210,7 @@ func TestAppendReceiptRepairsATornTrailingRecord(t *testing.T) {
 	}
 }
 
-func TestClaimPendingClaimsNothingWhenReceiptsFailPartway(t *testing.T) {
+func TestMailboxClaimsNothingWhenReceiptsFailPartway(t *testing.T) {
 	s, _ := open(t)
 	for _, id := range []string{ulidA, ulidB, ulidC} {
 		if err := s.Append("sub-1", message(id, id)); err != nil {
@@ -219,8 +224,8 @@ func TestClaimPendingClaimsNothingWhenReceiptsFailPartway(t *testing.T) {
 		t.Fatal(err)
 	}
 	restore := failAfterFileWrites(t, s, len(sample)+1)
-	if _, err := s.ClaimPending("sub-1"); err == nil {
-		t.Fatal("ClaimPending succeeded though its receipts could not be written")
+	if _, err := s.Mailbox("sub-1", MailboxOptions{StoredOnly: true, Claim: true}); err == nil {
+		t.Fatal("claim succeeded though its receipts could not be written")
 	}
 	restore()
 
@@ -233,12 +238,12 @@ func TestClaimPendingClaimsNothingWhenReceiptsFailPartway(t *testing.T) {
 			t.Errorf("%s state = %q after a failed receipt write, want %q: a claim must not be left half-recorded", m.Envelope.ID, m.State, StateStored)
 		}
 	}
-	claimed, err := s.ClaimPending("sub-1")
+	claimed, err := s.Mailbox("sub-1", MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(claimed) != 3 {
-		t.Fatalf("ClaimPending after the failure returned %d messages, want 3: no message may be stranded", len(claimed))
+		t.Fatalf("claim after the failure returned %d messages, want 3: no message may be stranded", len(claimed))
 	}
 }
 

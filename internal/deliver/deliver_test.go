@@ -120,6 +120,33 @@ func TestPushDecision(t *testing.T) {
 	}
 }
 
+func TestDeliverReturnsMailboxShortIDWithBacklogCollision(t *testing.T) {
+	f := setup(t, true)
+	f.register(t, "worker", os.Getpid(), store.AgentBusy)
+	older := f.env(t, "asker", "worker", envelope.KindMessage, "older", nil)
+	older.ID = "01JB7Q4W2Z6ZC9M1Z3X4Y4V6T7"
+	if err := f.st.Append("worker", older); err != nil {
+		t.Fatal(err)
+	}
+	newer := f.env(t, "asker", "worker", envelope.KindMessage, "newer", nil)
+	newer.ID = "01JB7Q4W2Z6ZC9M1Z3X4Y5V6T7"
+
+	res, err := f.svc.Deliver(newer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Pushed || res.Message.State != store.StateQueued || res.Message.Short != "5v6t7" {
+		t.Fatalf("Deliver = %+v, want the newer message queued with short id 5v6t7", res)
+	}
+	pushes, err := f.fake.Pushes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pushes) != 2 || pushes[0].Body != "older" || pushes[1].Body != "newer" {
+		t.Fatalf("pushes = %+v, want older then newer", pushes)
+	}
+}
+
 func TestPushIsNotDeliveredAgainByDrain(t *testing.T) {
 	f := setup(t, true)
 	f.register(t, "worker", os.Getpid(), store.AgentBusy)

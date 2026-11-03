@@ -155,12 +155,74 @@ func (s *Store) Messages(id string) ([]Message, error) {
 	return s.messagesLocked(f, id)
 }
 
+// MailboxOptions selects a mailbox view and whether to claim its stored messages.
+type MailboxOptions struct {
+	// Meta requires every value to match; a missing key matches an empty value.
+	Meta map[string]string
+	// ExcludeRead omits read messages. StoredOnly omits all non-stored messages.
+	ExcludeRead bool
+	StoredOnly  bool
+	// Claim marks the selected stored messages queued; otherwise this is a peek.
+	Claim bool
+}
+
+// Mailbox returns matching messages in append order, with short ids unique in
+// the whole mailbox. Claim marks all matching stored messages queued in one
+// batch under the mailbox lock; an unsuccessful claim records none of them.
+func (s *Store) Mailbox(id string, opts MailboxOptions) ([]Message, error) {
+	how := syscall.LOCK_SH
+	if opts.Claim {
+		how = syscall.LOCK_EX
+	}
+	f, err := s.lockMailbox(id, how)
+	if err != nil {
+		return nil, err
+	}
+	defer Unlock(f)
+	msgs, err := s.messagesLocked(f, id)
+	if err != nil {
+		return nil, err
+	}
+	var selected []Message
+	var receipts []receipt
+	ts := envelope.FormatTime(time.Now())
+	for _, msg := range msgs {
+		if (opts.ExcludeRead && msg.State == StateRead) || (opts.StoredOnly && msg.State != StateStored) {
+			continue
+		}
+		match := true
+		for k, v := range opts.Meta {
+			if msg.Envelope.Meta[k] != v {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		if opts.Claim && msg.State == StateStored {
+			receipts = append(receipts, receipt{ID: msg.Envelope.ID, State: StateQueued, TS: ts})
+			msg.State = StateQueued
+		}
+		selected = append(selected, msg)
+	}
+	if err := s.appendReceipts(id, receipts); err != nil {
+		return nil, err
+	}
+	return selected, nil
+}
+
 // ShortID is the shortest suffix of msgID, at least four characters, that
 // names exactly one message in agent id's mailbox.
 func (s *Store) ShortID(id, msgID string) (string, error) {
 	msgs, err := s.Messages(id)
 	if err != nil {
 		return "", err
+	}
+	for _, msg := range msgs {
+		if strings.EqualFold(msg.Envelope.ID, msgID) {
+			return msg.Short, nil
+		}
 	}
 	return shortID(msgs, msgID), nil
 }
@@ -212,61 +274,6 @@ func (s *Store) ResolveAny(query string) (Message, string, error) {
 	default:
 		return Message{}, "", ErrAmbiguousID
 	}
-}
-
-// Claim marks msgID queued if it is still stored, under the mailbox lock. It
-// reports false when someone else claimed it first.
-func (s *Store) Claim(id, msgID string) (Message, bool, error) {
-	f, err := s.lockMailbox(id, syscall.LOCK_EX)
-	if err != nil {
-		return Message{}, false, err
-	}
-	defer Unlock(f)
-	msgs, err := s.messagesLocked(f, id)
-	if err != nil {
-		return Message{}, false, err
-	}
-	msg, err := find(msgs, msgID)
-	if err != nil {
-		return Message{}, false, err
-	}
-	if msg.State != StateStored {
-		return msg, false, nil
-	}
-	if err := s.appendReceipt(id, msgID, StateQueued); err != nil {
-		return Message{}, false, err
-	}
-	msg.State = StateQueued
-	return msg, true, nil
-}
-
-// ClaimPending marks every stored message queued, in append order, and
-// returns them. A second call returns nothing: a message is delivered once.
-func (s *Store) ClaimPending(id string) ([]Message, error) {
-	f, err := s.lockMailbox(id, syscall.LOCK_EX)
-	if err != nil {
-		return nil, err
-	}
-	defer Unlock(f)
-	msgs, err := s.messagesLocked(f, id)
-	if err != nil {
-		return nil, err
-	}
-	var claimed []Message
-	var receipts []receipt
-	ts := envelope.FormatTime(time.Now())
-	for _, msg := range msgs {
-		if msg.State != StateStored {
-			continue
-		}
-		receipts = append(receipts, receipt{ID: msg.Envelope.ID, State: StateQueued, TS: ts})
-		msg.State = StateQueued
-		claimed = append(claimed, msg)
-	}
-	if err := s.appendReceipts(id, receipts); err != nil {
-		return nil, err
-	}
-	return claimed, nil
 }
 
 // Release returns a claimed message to stored, for example after a rejected
@@ -577,8 +584,25 @@ func (s *Store) messagesLocked(f *os.File, id string) ([]Message, error) {
 		}
 		msgs[i] = Message{Envelope: env, State: state}
 	}
+	// Count suffixes across the full mailbox, including messages a view may
+	// later filter out, so every short id remains unambiguous in the mailbox.
+	counts := make(map[string]int)
+	for _, msg := range msgs {
+		id := strings.ToLower(msg.Envelope.ID)
+		for n := 4; n < len(id); n++ {
+			counts[id[len(id)-n:]]++
+		}
+	}
 	for i := range msgs {
-		msgs[i].Short = shortID(msgs, msgs[i].Envelope.ID)
+		id := strings.ToLower(msgs[i].Envelope.ID)
+		msgs[i].Short = id
+		for n := 4; n < len(id); n++ {
+			suffix := id[len(id)-n:]
+			if counts[suffix] == 1 {
+				msgs[i].Short = suffix
+				break
+			}
+		}
 	}
 	return msgs, nil
 }

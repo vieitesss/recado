@@ -76,47 +76,43 @@ func (s *Service) deliverLocked(env envelope.Envelope, id string) (Result, error
 	if err := s.Store.Append(id, env); err != nil {
 		return Result{}, err
 	}
+	res := Result{Message: store.Message{Envelope: env, State: store.StateStored}}
+	h, ok := s.Harnesses.Lookup(agent.Harness)
+	// A harness that cannot queue during busy turns must wait for the shim's
+	// drain. Never reported is not idle.
+	if ok && agent.Live() && (h.QueuesWhileBusy() || agent.State == store.AgentIdle) {
+		// Claim every stored message, so an older backlog goes out first: a newer
+		// message never overtakes one that was already waiting.
+		claimed, err := s.Store.Mailbox(id, store.MailboxOptions{StoredOnly: true, Claim: true})
+		if err == nil {
+			pushed, rest := s.push(agent, h, claimed)
+			if err := s.release(id, rest); err != nil {
+				return Result{}, err
+			}
+			for _, msg := range pushed {
+				if msg.Envelope.ID == env.ID {
+					res.Pushed = true
+					res.Message.State = store.StateQueued
+					res.Message.Short = msg.Short
+					return res, nil
+				}
+			}
+			// A concurrent claim (a drain or inbox) already owns the envelope.
+			msg, err := s.Store.Resolve(id, env.ID)
+			if err != nil {
+				return Result{}, err
+			}
+			res.Message = msg
+			return res, nil
+		}
+		// The envelope is stored and the failed claim recorded nothing, so a
+		// later drain owns delivery. send still returns once stored.
+	}
 	short, err := s.Store.ShortID(id, env.ID)
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Message: store.Message{Envelope: env, State: store.StateStored, Short: short}}
-
-	h, ok := s.Harnesses.Lookup(agent.Harness)
-	if !ok || !agent.Live() {
-		return res, nil
-	}
-	// A harness that cannot queue during busy turns must wait for the shim's
-	// drain. Never reported is not idle.
-	if !h.QueuesWhileBusy() && agent.State != store.AgentIdle {
-		return res, nil
-	}
-
-	// Claim every stored message, so an older backlog goes out first: a newer
-	// message never overtakes one that was already waiting.
-	claimed, err := s.Store.ClaimPending(id)
-	if err != nil {
-		// The envelope is stored and the failed claim recorded nothing, so a
-		// later drain owns delivery. send still returns once stored.
-		return res, nil
-	}
-	pushed, rest := s.push(agent, h, claimed)
-	if err := s.release(id, rest); err != nil {
-		return Result{}, err
-	}
-	for _, msg := range pushed {
-		if msg.Envelope.ID == env.ID {
-			res.Pushed = true
-			res.Message.State = store.StateQueued
-			return res, nil
-		}
-	}
-	// A concurrent claim (a drain or inbox) already owns the envelope.
-	msg, err := s.Store.Resolve(id, env.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	res.Message = msg
+	res.Message.Short = short
 	return res, nil
 }
 
@@ -190,7 +186,7 @@ func (s *Service) drainLocked(id string) (Drained, error) {
 	if err != nil {
 		return Drained{}, err
 	}
-	msgs, err := s.Store.ClaimPending(id)
+	msgs, err := s.Store.Mailbox(id, store.MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil || len(msgs) == 0 {
 		return Drained{}, err
 	}
@@ -224,7 +220,7 @@ func (s *Service) Hold(id string) (Drained, error) {
 	if _, err := s.Store.Lookup(id); err != nil {
 		return Drained{}, err
 	}
-	msgs, err := s.Store.ClaimPending(id)
+	msgs, err := s.Store.Mailbox(id, store.MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil {
 		return Drained{}, err
 	}

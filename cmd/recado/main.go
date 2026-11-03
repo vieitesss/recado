@@ -335,12 +335,3 @@ func viewMessage(msg store.Message) message {
 		Envelope: msg.Envelope,
 	}
 }
-
-func matchMeta(meta, want map[string]string) bool {
-	for k, v := range want {
-		if meta[k] != v {
-			return false
-		}
-	}
-	return true
-}

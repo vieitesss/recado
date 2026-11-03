@@ -33,27 +33,14 @@ of recado's delivery path: recovery and debugging, never the normal path.
 			if err != nil {
 				return err
 			}
-			msgs, err := st.Messages(target.Agent)
+			msgs, err := st.Mailbox(target.Agent, store.MailboxOptions{
+				Meta: meta, ExcludeRead: !all, Claim: !peek,
+			})
 			if err != nil {
 				return err
 			}
 			var out []message
 			for _, msg := range msgs {
-				if !all && msg.State == store.StateRead {
-					continue
-				}
-				if !matchMeta(msg.Envelope.Meta, meta) {
-					continue
-				}
-				if !peek && msg.State == store.StateStored {
-					claimed, ok, err := st.Claim(target.Agent, msg.Envelope.ID)
-					if err != nil {
-						return err
-					}
-					if ok {
-						msg = claimed
-					}
-				}
 				view := viewMessage(msg)
 				out = append(out, view)
 			}
