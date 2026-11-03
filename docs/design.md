@@ -343,10 +343,13 @@ containers and behind NAT:
   `recado://local/manager-4123`, and delivers it locally.
 
 Agents never choose a route: they reply by id, and the id's envelope carries
-the right address. An upstream send or reply prints the full lowercase message
-id: its recipient's shortest unique suffix cannot be known until the relay
-delivers it. Local sends and outward remote sends still print the recipient's
-short id.
+the right address. The agent-facing send operation owns both delivery and,
+after a successful outward remote delivery, return-relay enrollment. `send`,
+`ask` and `reply` use it; generic `deliver` and the relay's local deliveries do
+not enroll senders. Local and upstream sends need no return relay. An upstream
+send or reply prints the full lowercase message id: its recipient's shortest
+unique suffix cannot be known until the relay delivers it. Local sends and
+outward remote sends still print the recipient's short id.
 
 ### Relay
 
@@ -356,10 +359,13 @@ immediately after the last handled outbox line; delivery is idempotent by
 message id, including if a relay stops between delivery and cursor update.
 `relay/<machine>.senders` is an append-only, deduplicated list of local agent
 ids that have sent to that machine. An agent is live when its registry pid is
-live, regardless of when it sent. The first `send` to a machine starts a relay
-if its lock is free. It pulls only messages addressed to this host, survives
-dropped connections, and exits once no recorded sender is live and the outbox
-has been drained.
+live, regardless of when it sent. After a successful outward `send`, `ask` or
+`reply`, enrollment records the sender and starts a relay if its lock is free.
+If relay startup fails, the command returns an error without printing a sent
+result, but the remote delivery has already succeeded and the sender remains
+recorded. A later successful enrollment can start the relay. The relay pulls
+only messages addressed to this host, survives dropped connections, and exits
+once no recorded sender is live and the outbox has been drained.
 
 `recado outbox --host H --json --after N` emits JSON lines with `offset` (the
 next byte offset) and `envelope`, filtering for upstream host H. `N` must be

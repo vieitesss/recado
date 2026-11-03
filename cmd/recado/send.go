@@ -76,15 +76,12 @@ copies its meta. Always name the message: never "the last question".`,
 			if err != nil {
 				return err
 			}
-			svc, err := a.service()
+			sender, err := a.sender()
 			if err != nil {
 				return err
 			}
-			res, err := svc.Reply(from, args[0], body)
+			res, err := sender.Reply(from, args[0], body)
 			if err != nil {
-				return err
-			}
-			if err := a.startReturnRelay(res.Message.Envelope.To, from.Agent); err != nil {
 				return err
 			}
 			return printSent(cmd, view(res))
@@ -101,7 +98,7 @@ func (a *app) send(cmd *cobra.Command, toArg, kind, body string, meta map[string
 	if err != nil {
 		return usage(err)
 	}
-	svc, err := a.service()
+	sender, err := a.sender()
 	if err != nil {
 		return err
 	}
@@ -109,11 +106,8 @@ func (a *app) send(cmd *cobra.Command, toArg, kind, body string, meta map[string
 	if err != nil {
 		return usage(err)
 	}
-	res, err := svc.Deliver(env)
+	res, err := sender.Send(env)
 	if err != nil {
-		return err
-	}
-	if err := a.startReturnRelay(to, from.Agent); err != nil {
 		return err
 	}
 	return printSent(cmd, view(res))

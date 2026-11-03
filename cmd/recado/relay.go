@@ -1,12 +1,7 @@
 package main
 
 import (
-	"os"
-	osExec "os/exec"
-	"syscall"
-
 	"github.com/spf13/cobra"
-	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/relay"
 )
 
@@ -20,28 +15,10 @@ func (a *app) newRelayCmd() *cobra.Command {
 	})}
 }
 
-func (a *app) startReturnRelay(to addr.Address, sender string) error {
-	if to.IsLocal() || to.Upstream {
-		return nil
-	}
-	st, err := a.store()
+func (a *app) sender() (relay.Sender, error) {
+	svc, err := a.service()
 	if err != nil {
-		return err
+		return relay.Sender{}, err
 	}
-	return relay.RecordSender(st.Root(), to.Machine, sender, func() error {
-		if a.startRelay != nil {
-			return a.startRelay(to.Machine)
-		}
-		executable, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		cmd := osExec.Command(executable, "relay", to.Machine)
-		cmd.Env = append(os.Environ(), "RECADO_STATE_DIR="+st.Root())
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		return cmd.Process.Release()
-	})
+	return relay.Sender{Delivery: svc, Start: a.startRelay}, nil
 }
