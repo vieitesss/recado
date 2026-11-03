@@ -4,7 +4,6 @@ package relay
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -225,12 +224,6 @@ func liveSenders(f *os.File, st *store.Store) (bool, error) {
 	}
 }
 
-type frame struct {
-	Offset   int64           `json:"offset"`
-	Envelope json.RawMessage `json:"envelope"`
-	CaughtUp bool            `json:"caught_up"`
-}
-
 func pull(ctx context.Context, svc *deliver.Service, machine, host, base string, cursor *int64, log *os.File, idle func() (bool, error)) (bool, bool, error) {
 	cmd, err := deliver.RemoteCommand(svc.Machines, machine, "outbox", "--follow", "--host", host, "--after", strconv.FormatInt(*cursor, 10), "--json")
 	if err != nil {
@@ -255,54 +248,14 @@ func pull(ctx context.Context, svc *deliver.Service, machine, host, base string,
 		case <-done:
 		}
 	}()
-	reader := bufio.NewReader(stdout)
-	progressed := false
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return false, progressed, fmt.Errorf("outbox connection: %w", err)
-		}
-		var f frame
-		if err = json.Unmarshal(line, &f); err != nil {
-			return false, progressed, fmt.Errorf("outbox frame: %w", err)
-		}
-		if f.Offset < *cursor {
-			return false, progressed, fmt.Errorf("outbox offset moved backwards")
-		}
-		if f.Envelope != nil {
-			env, err := envelope.Decode(f.Envelope)
-			if err != nil {
-				return false, progressed, err
-			}
-			if !env.From.IsLocal() {
-				return false, progressed, fmt.Errorf("invalid remote sender %q", env.From)
-			}
-			if !env.To.Upstream || env.To.Machine != host {
-				return false, progressed, fmt.Errorf("invalid upstream recipient %q", env.To)
-			}
-			env.From = addr.Address{Machine: machine, Agent: env.From.Agent}
-			env.To = addr.Local(env.To.Agent)
-			if _, err = svc.Deliver(env); err != nil {
-				return false, progressed, err
-			}
-		} else if !f.CaughtUp {
-			return false, progressed, fmt.Errorf("invalid outbox frame")
-		}
-		if f.Offset > *cursor {
-			if err = writeCursor(base, f.Offset); err != nil {
-				return false, progressed, err
-			}
-			*cursor = f.Offset
-			progressed = true
-		}
-		if f.CaughtUp {
-			yes, err := idle()
-			if err != nil {
-				return false, progressed, err
-			}
-			if yes {
-				return true, progressed, nil
-			}
-		}
+	consumer := store.OutboxConsumer{
+		Machine: machine, Host: host, Cursor: cursor,
+		Deliver: func(env envelope.Envelope) error {
+			_, err := svc.Deliver(env)
+			return err
+		},
+		SaveCursor: func(n int64) error { return writeCursor(base, n) },
+		CaughtUp:   idle,
 	}
+	return consumer.Consume(stdout)
 }

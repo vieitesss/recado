@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,32 +22,13 @@ func (a *app) newOutboxCmd() *cobra.Command {
 				return err
 			}
 			for {
-				records, end, err := st.ReadOutbox(after, host)
+				end, err := st.WriteOutboxBatch(cmd.OutOrStdout(), after, host, jsonFlag(cmd), follow)
 				if err != nil {
 					return err
-				}
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				for _, record := range records {
-					if jsonFlag(cmd) {
-						err = enc.Encode(record)
-					} else {
-						err = enc.Encode(record.Envelope)
-					}
-					if err != nil {
-						return err
-					}
 				}
 				after = end
 				if !follow {
 					return nil
-				}
-				if jsonFlag(cmd) {
-					if err := enc.Encode(struct {
-						Offset   int64 `json:"offset"`
-						CaughtUp bool  `json:"caught_up"`
-					}{after, true}); err != nil {
-						return err
-					}
 				}
 				timer := time.NewTimer(200 * time.Millisecond)
 				select {
