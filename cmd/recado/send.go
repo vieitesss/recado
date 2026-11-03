@@ -150,7 +150,7 @@ This is the one entry point for remote sends, the relay and other software.`,
 				}
 			}
 			if jsonFlag(cmd) {
-				return printJSON(cmd, struct {
+				return printJSON(cmd.OutOrStdout(), struct {
 					Delivered []sent `json:"delivered"`
 				}{delivered})
 			}

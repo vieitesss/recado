@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/vieitesss/recado/internal/addr"
 	"github.com/vieitesss/recado/internal/envelope"
 )
 
@@ -51,8 +50,6 @@ func (s *Store) WriteOutboxBatch(w io.Writer, after int64, host string, jsonOutp
 // OutboxConsumer delivers a stream and persists its cursor only after delivery.
 // CaughtUp decides whether a watermark ends consumption; false keeps reading.
 type OutboxConsumer struct {
-	Machine    string
-	Host       string
 	Cursor     *int64
 	Deliver    func(envelope.Envelope) error
 	SaveCursor func(int64) error
@@ -80,14 +77,6 @@ func (c OutboxConsumer) Consume(r io.Reader) (idle, progressed bool, err error) 
 			if err != nil {
 				return false, progressed, err
 			}
-			if !env.From.IsLocal() {
-				return false, progressed, fmt.Errorf("invalid remote sender %q", env.From)
-			}
-			if !env.To.Upstream || env.To.Machine != c.Host {
-				return false, progressed, fmt.Errorf("invalid upstream recipient %q", env.To)
-			}
-			env.From = addr.Address{Machine: c.Machine, Agent: env.From.Agent}
-			env.To = addr.Local(env.To.Agent)
 			if err = c.Deliver(env); err != nil {
 				return false, progressed, err
 			}

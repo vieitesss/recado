@@ -249,13 +249,26 @@ func pull(ctx context.Context, svc *deliver.Service, machine, host, base string,
 		}
 	}()
 	consumer := store.OutboxConsumer{
-		Machine: machine, Host: host, Cursor: cursor,
+		Cursor: cursor,
 		Deliver: func(env envelope.Envelope) error {
-			_, err := svc.Deliver(env)
-			return err
+			return deliverOutbox(svc, machine, host, env)
 		},
 		SaveCursor: func(n int64) error { return writeCursor(base, n) },
 		CaughtUp:   idle,
 	}
 	return consumer.Consume(stdout)
+}
+
+// deliverOutbox validates the return route before delivering to the local mailbox.
+func deliverOutbox(svc *deliver.Service, machine, host string, env envelope.Envelope) error {
+	if !env.From.IsLocal() {
+		return fmt.Errorf("invalid remote sender %q", env.From)
+	}
+	if !env.To.Upstream || env.To.Machine != host {
+		return fmt.Errorf("invalid upstream recipient %q", env.To)
+	}
+	env.From = addr.Address{Machine: machine, Agent: env.From.Agent}
+	env.To = addr.Local(env.To.Agent)
+	_, err := svc.Deliver(env)
+	return err
 }

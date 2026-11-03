@@ -34,6 +34,8 @@ func (*dialectHarness) PrepareHook(req harness.HookRequest) (harness.HookPlan, e
 		event = "turn-start"
 	case "finish":
 		event = "turn-end"
+	case "invalid-plan":
+		event = "invalid-normalized-event"
 	}
 	plan := harness.HookPlan{
 		Event:       event,
@@ -88,6 +90,41 @@ func TestUnknownHookEventKeepsErrorAndExitCode(t *testing.T) {
 				t.Fatalf("output = %q, error = %v; want no output and %q", out, err, want)
 			}
 		})
+	}
+}
+
+func TestUnknownHookEventReportsOriginalDialectEvent(t *testing.T) {
+	fake := &harness.Fake{Dir: t.TempDir()}
+	a := &app{Root: t.TempDir(), Harnesses: harness.Set{&dialectHarness{fake}}}
+	t.Setenv("RECADO_ADDR", "worker")
+	out, err := exec(t, a, "", "hook", "dialect", "invalid-plan")
+	const want = `unknown hook event "invalid-plan": want session-start, turn-start or turn-end`
+	if out != "" || err == nil || err.Error() != want || exitCode(err) != 2 {
+		t.Fatalf("output = %q, error = %v, exit = %d; want %q and exit 2", out, err, exitCode(err), want)
+	}
+}
+
+func TestPrintDrainedUsesResponseWriterAndFormat(t *testing.T) {
+	var out bytes.Buffer
+	pushed := []store.Message{{Short: "abcd"}}
+	if err := printDrained(&out, pushed, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	const want = "{\n  \"pushed\": [\n    \"abcd\"\n  ],\n  \"pending\": []\n}\n"
+	if out.String() != want {
+		t.Fatalf("JSON response = %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	if err := printDrained(&out, nil, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	const empty = "{\n  \"pushed\": [],\n  \"pending\": []\n}\n"
+	if out.String() != empty {
+		t.Fatalf("empty JSON response = %q, want %q", out.String(), empty)
+	}
+	out.Reset()
+	if err := printDrained(&out, pushed, nil, false); err != nil || out.Len() != 0 {
+		t.Fatalf("text response = %q, %v; want empty", out.String(), err)
 	}
 }
 

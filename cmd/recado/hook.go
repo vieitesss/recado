@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 
@@ -71,19 +72,18 @@ func (a *app) runHook(cmd *cobra.Command, h harness.Harness, req harness.HookReq
 		return err
 	}
 	reg := a.registry(h, id)
-	switch plan.Event {
-	case "session-start":
+	if plan.Event == "session-start" {
 		if reg.Endpoint, err = cmd.Flags().GetString("endpoint"); err != nil {
 			return err
 		}
-	case "turn-start", "turn-end":
-	default:
-		return usagef("unknown hook event %q: want session-start, turn-start or turn-end", req.Event)
 	}
 	svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
-	return svc.Hook(reg, plan, cmd.OutOrStdout(), jsonFlag(cmd), func(_ io.Writer, pushed, pending []store.Message, _ bool) error {
-		return printDrained(cmd, pushed, pending)
-	})
+	err = svc.Hook(reg, plan, cmd.OutOrStdout(), jsonFlag(cmd), printDrained)
+	var unknown deliver.UnknownHookEvent
+	if errors.As(err, &unknown) {
+		return usage(deliver.UnknownHookEvent(req.Event))
+	}
+	return err
 }
 
 // hookAgent is the agent id a hook runs for: RECADO_ADDR, the harness's
@@ -114,20 +114,20 @@ func (a *app) hookAgent(h harness.Harness, fallback string) (string, error) {
 
 // printDrained writes the drain report: the pushed short ids and the messages
 // the shim must hand over, as JSON or as the text the shim reads.
-func printDrained(cmd *cobra.Command, pushed, pending []store.Message) error {
+func printDrained(w io.Writer, pushed, pending []store.Message, json bool) error {
 	messages := make([]message, len(pending))
 	for i, msg := range pending {
 		messages[i] = viewMessage(msg)
 	}
-	if jsonFlag(cmd) {
+	if json {
 		shorts := make([]string, len(pushed))
 		for i, msg := range pushed {
 			shorts[i] = msg.Short
 		}
-		return printJSON(cmd, struct {
+		return printJSON(w, struct {
 			Pushed  []string  `json:"pushed"`
 			Pending []message `json:"pending"`
 		}{shorts, messages})
 	}
-	return printMessages(cmd.OutOrStdout(), messages)
+	return printMessages(w, messages)
 }

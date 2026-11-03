@@ -213,7 +213,8 @@ func (s *Store) Mailbox(id string, opts MailboxOptions) ([]Message, error) {
 }
 
 // ShortID is the shortest suffix of msgID, at least four characters, that
-// names exactly one message in agent id's mailbox.
+// names exactly one message in agent id's mailbox. It returns ErrUnknownID
+// when the message is absent.
 func (s *Store) ShortID(id, msgID string) (string, error) {
 	msgs, err := s.Messages(id)
 	if err != nil {
@@ -224,7 +225,7 @@ func (s *Store) ShortID(id, msgID string) (string, error) {
 			return msg.Short, nil
 		}
 	}
-	return shortID(msgs, msgID), nil
+	return "", fmt.Errorf("%w: %s", ErrUnknownID, msgID)
 }
 
 // Resolve finds the one message in agent id's mailbox whose id ends with
@@ -319,23 +320,6 @@ func (s *Store) MarkQueuedRead(id string) error {
 		}
 	}
 	return nil
-}
-
-func shortID(msgs []Message, msgID string) string {
-	target := strings.ToLower(msgID)
-	for n := 4; n < len(target); n++ {
-		suffix := target[len(target)-n:]
-		matches := 0
-		for _, m := range msgs {
-			if strings.HasSuffix(strings.ToLower(m.Envelope.ID), suffix) {
-				matches++
-			}
-		}
-		if matches == 1 {
-			return suffix
-		}
-	}
-	return target
 }
 
 func resolve(msgs []Message, query string) (Message, error) {

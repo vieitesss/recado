@@ -31,7 +31,7 @@ func (a *app) newMachineCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag(cmd) {
-				return printJSON(cmd, machine.Machine{Name: args[0], Kind: args[1], Target: args[2]})
+				return printJSON(cmd.OutOrStdout(), machine.Machine{Name: args[0], Kind: args[1], Target: args[2]})
 			}
 			return nil
 		}),
@@ -46,7 +46,7 @@ func (a *app) newMachineCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag(cmd) {
-				return printJSON(cmd, struct {
+				return printJSON(cmd.OutOrStdout(), struct {
 					Name string `json:"name"`
 				}{args[0]})
 			}
@@ -64,7 +64,7 @@ func (a *app) newMachineCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag(cmd) {
-				return printJSON(cmd, struct {
+				return printJSON(cmd.OutOrStdout(), struct {
 					Machines []machine.Machine `json:"machines"`
 				}{list})
 			}

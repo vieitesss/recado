@@ -172,6 +172,23 @@ func TestShortIDIsShortestUniqueSuffix(t *testing.T) {
 	}
 }
 
+func TestShortIDRejectsAbsentMessage(t *testing.T) {
+	s, _ := open(t)
+	if err := s.Append("sub-1", message(ulidA, "stored")); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{ulidB, ulidC, ""} {
+		short, err := s.ShortID("sub-1", id)
+		if short != "" || !errors.Is(err, ErrUnknownID) {
+			t.Errorf("ShortID(%q) = %q, %v; want ErrUnknownID", id, short, err)
+		}
+	}
+	short, err := s.ShortID("empty", ulidA)
+	if short != "" || !errors.Is(err, ErrUnknownID) {
+		t.Errorf("ShortID(empty mailbox) = %q, %v; want ErrUnknownID", short, err)
+	}
+}
+
 func TestResolveAcceptsUniqueSuffixAndFullID(t *testing.T) {
 	s, _ := open(t)
 	for _, id := range []string{ulidA, ulidB, ulidC} {

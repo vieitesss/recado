@@ -41,6 +41,18 @@ func writePending(w io.Writer, _ []store.Message, pending []store.Message, _ boo
 	return nil
 }
 
+func TestHookRejectsUnknownEvent(t *testing.T) {
+	f := setup(t, false)
+	err := f.svc.Hook(store.Agent{ID: "worker"}, harness.HookPlan{Event: "unexpected"}, io.Discard, false, writePending)
+	var unknown UnknownHookEvent
+	if !errors.As(err, &unknown) || unknown != "unexpected" || err.Error() != `unknown hook event "unexpected": want session-start, turn-start or turn-end` {
+		t.Fatalf("unknown event error = %v", err)
+	}
+	if _, err := f.st.Lookup("worker"); !errors.Is(err, store.ErrUnknownAgent) {
+		t.Fatalf("unknown event registered an agent: %v", err)
+	}
+}
+
 func TestHookAdapterOutputFailureRetriesHeldMessages(t *testing.T) {
 	f := setup(t, false)
 	f.register(t, "worker", os.Getpid(), store.AgentBusy)

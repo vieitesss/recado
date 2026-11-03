@@ -270,12 +270,12 @@ func jsonFlag(cmd *cobra.Command) bool {
 	return err == nil && on
 }
 
-func printJSON(cmd *cobra.Command, v any) error {
+func printJSON(w io.Writer, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	_, err = fmt.Fprintln(w, string(data))
 	return err
 }
 
@@ -293,7 +293,7 @@ func view(res deliver.Result) sent {
 
 func printSent(cmd *cobra.Command, r sent) error {
 	if jsonFlag(cmd) {
-		return printJSON(cmd, r)
+		return printJSON(cmd.OutOrStdout(), r)
 	}
 	_, err := fmt.Fprintln(cmd.OutOrStdout(), r.Short)
 	return err

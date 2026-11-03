@@ -9,6 +9,13 @@ import (
 	"github.com/vieitesss/recado/internal/store"
 )
 
+// UnknownHookEvent is a lifecycle event the delivery service does not handle.
+type UnknownHookEvent string
+
+func (e UnknownHookEvent) Error() string {
+	return fmt.Sprintf("unknown hook event %q: want session-start, turn-start or turn-end", string(e))
+}
+
 // Hook handles a lifecycle plan and writes its response. Agent supplies the
 // session-start registration and the fallback if a turn hook fires first. The
 // standard writer must be non-nil; it is used when the adapter has not supplied
@@ -53,7 +60,7 @@ func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, 
 			drained, err = s.turnEnd(id)
 		}
 	default:
-		return fmt.Errorf("unknown hook event %q: want session-start, turn-start or turn-end", plan.Event)
+		return UnknownHookEvent(plan.Event)
 	}
 	if err != nil {
 		return err

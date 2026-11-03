@@ -46,7 +46,7 @@ of recado's delivery path: recovery and debugging, never the normal path.
 			}
 
 			if jsonFlag(cmd) {
-				return printJSON(cmd, struct {
+				return printJSON(cmd.OutOrStdout(), struct {
 					Messages []message `json:"messages"`
 				}{out})
 			}
@@ -80,7 +80,7 @@ short id send printed belongs to the recipient's mailbox.`,
 			}
 			view := viewMessage(msg)
 			if jsonFlag(cmd) {
-				return printJSON(cmd, struct {
+				return printJSON(cmd.OutOrStdout(), struct {
 					ID      string `json:"id"`
 					Short   string `json:"short"`
 					State   string `json:"state"`
@@ -120,7 +120,7 @@ func (a *app) newAgentsCmd() *cobra.Command {
 				agents[i] = agent{ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(), State: string(ag.State), CWD: ag.CWD}
 			}
 			if jsonFlag(cmd) {
-				return printJSON(cmd, struct {
+				return printJSON(cmd.OutOrStdout(), struct {
 					Agents []agent `json:"agents"`
 				}{agents})
 			}
@@ -154,7 +154,7 @@ func (a *app) newWhoamiCmd() *cobra.Command {
 				return err
 			}
 			if jsonFlag(cmd) {
-				return printJSON(cmd, struct {
+				return printJSON(cmd.OutOrStdout(), struct {
 					Address string `json:"address"`
 					Agent   string `json:"agent"`
 				}{self.String(), self.Agent})

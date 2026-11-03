@@ -22,8 +22,6 @@ const (
 	KindMessage  = "message"
 	KindQuestion = "question"
 	KindAnswer   = "answer"
-	KindComplete = "complete"
-	KindFollowup = "followup"
 )
 
 // TimeLayout is the timestamp format of envelopes and receipts.

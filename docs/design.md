@@ -374,6 +374,10 @@ With `--follow`, it keeps the connection open and emits
 `{"offset":N,"caught_up":true}` after reaching the end of the current complete
 lines, initially and on each subsequent poll. A watermark includes skipped lines for other hosts; it lets the relay
 advance its cursor and know that the outbox has been drained before exiting.
+The shared outbox consumer decodes frames and saves an envelope's cursor only
+after delivery; watermarks also advance it past filtered lines. The relay
+validates the sender and upstream recipient, then rewrites both addresses before
+local delivery.
 
 A later transport may share mailbox files directly (a synced directory, a
 bind mount into a container) instead of relaying.
