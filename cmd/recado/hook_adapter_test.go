@@ -66,6 +66,31 @@ func (*dialectHarness) PrepareHook(req harness.HookRequest) (harness.HookPlan, e
 
 func (*dialectHarness) FailOpen() bool { return false }
 
+func TestUnknownHookEventKeepsErrorAndExitCode(t *testing.T) {
+	fake, _ := newTestApp(t, false)
+	claude := newClaudeApp(t)
+	t.Setenv("RECADO_ADDR", "worker")
+	for _, tc := range []struct {
+		name string
+		app  *app
+		code int
+	}{
+		{"fake", fake, 2},
+		{"claude", claude, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := exec(t, tc.app, "", "hook", tc.name, "unknown")
+			if code := exitCode(err); code != tc.code {
+				t.Fatalf("exit code = %d, want %d (error %v)", code, tc.code, err)
+			}
+			const want = `unknown hook event "unknown": want session-start, turn-start or turn-end`
+			if err == nil || err.Error() != want || out != "" {
+				t.Fatalf("output = %q, error = %v; want no output and %q", out, err, want)
+			}
+		})
+	}
+}
+
 func TestAdapterOwnsHookDialect(t *testing.T) {
 	fake := &harness.Fake{Dir: t.TempDir()}
 	a := &app{Root: filepath.Join(t.TempDir(), "state"), Harnesses: harness.Set{&dialectHarness{fake}}}

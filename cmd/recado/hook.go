@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -70,58 +70,20 @@ func (a *app) runHook(cmd *cobra.Command, h harness.Harness, req harness.HookReq
 	if err != nil {
 		return err
 	}
-	svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
+	reg := a.registry(h, id)
 	switch plan.Event {
 	case "session-start":
-		reg := a.registry(h, id)
 		if reg.Endpoint, err = cmd.Flags().GetString("endpoint"); err != nil {
 			return err
 		}
-		if plan.Configure != nil {
-			if err := plan.Configure(&reg); err != nil {
-				return err
-			}
-		}
-		if err := st.Register(reg); err != nil {
-			return err
-		}
-		drained, err := svc.Drain(id)
-		if err != nil {
-			return err
-		}
-		if plan.KeepPending && len(drained.Pending) > 0 {
-			releasePending(st, id, drained.Pending)
-			drained.Pending = nil
-		}
-		return reportDrained(cmd, st, id, drained, plan)
-	case "turn-start":
-		if err := a.ensureAgent(st, h, id); err != nil {
-			return err
-		}
-		if err := svc.TurnStart(id); err != nil {
-			return err
-		}
-		if plan.WriteResponse != nil {
-			return reportDrained(cmd, st, id, deliver.Drained{}, plan)
-		}
-		return nil
-	case "turn-end":
-		if err := a.ensureAgent(st, h, id); err != nil {
-			return err
-		}
-		var drained deliver.Drained
-		if plan.HoldTurn {
-			drained, err = svc.Hold(id)
-		} else {
-			drained, err = svc.TurnEnd(id)
-		}
-		if err != nil {
-			return err
-		}
-		return reportDrained(cmd, st, id, drained, plan)
+	case "turn-start", "turn-end":
 	default:
 		return usagef("unknown hook event %q: want session-start, turn-start or turn-end", req.Event)
 	}
+	svc := &deliver.Service{Store: st, Harnesses: a.Harnesses}
+	return svc.Hook(reg, plan, cmd.OutOrStdout(), jsonFlag(cmd), func(_ io.Writer, pushed, pending []store.Message, _ bool) error {
+		return printDrained(cmd, pushed, pending)
+	})
 }
 
 // hookAgent is the agent id a hook runs for: RECADO_ADDR, the harness's
@@ -150,57 +112,22 @@ func (a *app) hookAgent(h harness.Harness, fallback string) (string, error) {
 	return id, nil
 }
 
-// ensureAgent registers the agent if this is the first hook it fired.
-func (a *app) ensureAgent(st *store.Store, h harness.Harness, id string) error {
-	_, err := st.Lookup(id)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, store.ErrUnknownAgent) {
-		return err
-	}
-	return st.Register(a.registry(h, id))
-}
-
-// reportDrained prints what the shim must deliver itself. If the output fails,
-// nothing reliable reached the shim: release every claimed message, so a later
-// drain or session start can still deliver it.
-func reportDrained(cmd *cobra.Command, st *store.Store, id string, drained deliver.Drained, plan harness.HookPlan) error {
-	var err error
-	if plan.WriteResponse != nil {
-		err = plan.WriteResponse(cmd.OutOrStdout(), drained.Pushed, drained.Pending, jsonFlag(cmd))
-	} else {
-		err = printDrained(cmd, drained)
-	}
-	if err != nil {
-		releasePending(st, id, drained.Pending)
-	}
-	return err
-}
-
 // printDrained writes the drain report: the pushed short ids and the messages
 // the shim must hand over, as JSON or as the text the shim reads.
-func printDrained(cmd *cobra.Command, drained deliver.Drained) error {
-	pending := make([]message, len(drained.Pending))
-	for i, msg := range drained.Pending {
-		pending[i] = viewMessage(msg)
+func printDrained(cmd *cobra.Command, pushed, pending []store.Message) error {
+	messages := make([]message, len(pending))
+	for i, msg := range pending {
+		messages[i] = viewMessage(msg)
 	}
 	if jsonFlag(cmd) {
-		pushed := make([]string, len(drained.Pushed))
-		for i, msg := range drained.Pushed {
-			pushed[i] = msg.Short
+		shorts := make([]string, len(pushed))
+		for i, msg := range pushed {
+			shorts[i] = msg.Short
 		}
 		return printJSON(cmd, struct {
 			Pushed  []string  `json:"pushed"`
 			Pending []message `json:"pending"`
-		}{pushed, pending})
+		}{shorts, messages})
 	}
-	return printMessages(cmd.OutOrStdout(), pending)
-}
-
-// releasePending returns a failed hook's claimed messages to stored.
-func releasePending(st *store.Store, id string, msgs []store.Message) {
-	for _, msg := range msgs {
-		_ = st.Release(id, msg.Envelope.ID)
-	}
+	return printMessages(cmd.OutOrStdout(), messages)
 }

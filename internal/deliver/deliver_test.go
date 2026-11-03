@@ -2,6 +2,7 @@ package deliver
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -159,7 +160,7 @@ func TestPushIsNotDeliveredAgainByDrain(t *testing.T) {
 		t.Fatal("message was not pushed to a live, queueing harness")
 	}
 
-	drained, err := f.svc.Drain("worker")
+	drained, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +190,7 @@ func TestDrainDeliversStoredMessagesInOrder(t *testing.T) {
 		t.Fatalf("pushes before drain = %d, %v; want none", len(pushes), err)
 	}
 
-	drained, err := f.svc.Drain("worker")
+	drained, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +205,7 @@ func TestDrainDeliversStoredMessagesInOrder(t *testing.T) {
 		t.Fatalf("pushed = %+v, want first then second", pushes)
 	}
 
-	again, err := f.svc.Drain("worker")
+	again, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +231,7 @@ func TestRejectedPushStaysStored(t *testing.T) {
 	}
 
 	f.fake.Fail = false
-	drained, err := f.svc.Drain("worker")
+	drained, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +253,7 @@ func TestDrainReleasesWhatTheHarnessRefuses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	drained, err := f.svc.Drain("worker")
+	drained, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +266,7 @@ func TestDrainReleasesWhatTheHarnessRefuses(t *testing.T) {
 		}
 	}
 	f.fake.Fail = false
-	again, err := f.svc.Drain("worker")
+	again, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +281,7 @@ func TestDrainOfGoneAgentReturnsPendingWithoutPush(t *testing.T) {
 	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "hi", nil)); err != nil {
 		t.Fatal(err)
 	}
-	drained, err := f.svc.Drain("worker")
+	drained, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +307,7 @@ func TestConcurrentDrainsClaimEachMessageOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			drained, err := f.svc.Drain("worker")
+			drained, err := f.svc.drain("worker")
 			if err != nil {
 				t.Errorf("Drain: %v", err)
 				return
@@ -507,12 +508,17 @@ func TestTurnEndWaitsForInFlightFailedPush(t *testing.T) {
 	<-h.started
 
 	type result struct {
-		drained Drained
+		drained drainResult
 		err     error
 	}
 	turnEnd := make(chan result, 1)
 	go func() {
-		d, err := f.svc.TurnEnd("worker")
+		var d drainResult
+		write := func(_ io.Writer, pushed, pending []store.Message, _ bool) error {
+			d = drainResult{Pushed: pushed, Pending: pending}
+			return nil
+		}
+		err := f.svc.Hook(store.Agent{ID: "worker"}, harness.HookPlan{Event: "turn-end"}, io.Discard, false, write)
 		turnEnd <- result{d, err}
 	}()
 
@@ -578,7 +584,9 @@ func TestTurnStartWaitsForInFlightDelivery(t *testing.T) {
 	<-h.entered
 
 	turnDone := make(chan error, 1)
-	go func() { turnDone <- f.svc.TurnStart("worker") }()
+	go func() {
+		turnDone <- f.svc.Hook(store.Agent{ID: "worker"}, harness.HookPlan{Event: "turn-start"}, io.Discard, false, writePending)
+	}()
 
 	select {
 	case err := <-turnDone:
@@ -646,7 +654,7 @@ func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
 	}
 	f.fake.FailAfter = 2 // the first message is written, the second is rejected
 
-	drained, err := f.svc.Drain("worker")
+	drained, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +674,7 @@ func TestDrainReportsEachMessageItHandedOver(t *testing.T) {
 
 	// The next drain retries only the rejected message, never the pushed prefix.
 	f.fake.FailAfter = 0
-	again, err := f.svc.Drain("worker")
+	again, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +697,7 @@ func TestDrainLeavesMessagesForABusyNonQueueingHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	drained, err := f.svc.Drain("worker")
+	drained, err := f.svc.drain("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +718,7 @@ func TestHoldHandsPendingMessagesBackWithoutPushing(t *testing.T) {
 		}
 	}
 
-	held, err := f.svc.Hold("worker")
+	held, err := f.svc.hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,10 +745,10 @@ func TestHoldHandsPendingMessagesBackWithoutPushing(t *testing.T) {
 	}
 
 	// The new turn marks them read, and a later hold finds nothing.
-	if err := f.svc.TurnStart("worker"); err != nil {
+	if err := f.svc.turnStart("worker"); err != nil {
 		t.Fatal(err)
 	}
-	again, err := f.svc.Hold("worker")
+	again, err := f.svc.hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,7 +761,7 @@ func TestHoldRecordsIdleWhenNothingIsPending(t *testing.T) {
 	f := setup(t, false)
 	f.register(t, "worker", os.Getpid(), store.AgentBusy)
 
-	held, err := f.svc.Hold("worker")
+	held, err := f.svc.hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +786,7 @@ func TestHoldHandsOverAtEachTurnEnd(t *testing.T) {
 	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "first", nil)); err != nil {
 		t.Fatal(err)
 	}
-	held, err := f.svc.Hold("worker")
+	held, err := f.svc.hold("worker")
 	if err != nil || len(held.Pending) != 1 || held.Pending[0].Envelope.Body != "first" {
 		t.Fatalf("first Hold = %+v, %v; want the first message handed over", held, err)
 	}
@@ -786,7 +794,7 @@ func TestHoldHandsOverAtEachTurnEnd(t *testing.T) {
 	if _, err := f.svc.Deliver(f.env(t, "asker", "worker", envelope.KindMessage, "second", nil)); err != nil {
 		t.Fatal(err)
 	}
-	cont, err := f.svc.Hold("worker")
+	cont, err := f.svc.hold("worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -798,7 +806,7 @@ func TestHoldHandsOverAtEachTurnEnd(t *testing.T) {
 	}
 
 	// The first end with nothing waiting settles the agent.
-	if _, err := f.svc.Hold("worker"); err != nil {
+	if _, err := f.svc.hold("worker"); err != nil {
 		t.Fatal(err)
 	}
 	if agent, err := f.st.Lookup("worker"); err != nil || agent.State != store.AgentIdle {

@@ -214,6 +214,17 @@ did not hand over. A known refusal cannot strand a message. The delivery layer r
 the text (with the recipient's short id) and hands the adapter an
 `Outgoing{Envelope, Text}`; adapters never read the store.
 
+Lifecycle handover is also owned by delivery: it applies the adapter's hook
+plan, claims and pushes or holds the backlog, then writes the adapter's response
+(or the standard shim report). Session start can keep an unpushable backlog
+stored instead of returning it. If response output fails, delivery attempts to
+release the claimed messages not pushed, so a later hook can retry them;
+a partially written response can therefore be repeated. Messages already
+pushed stay queued. These response and release attempts occur
+after the per-recipient delivery lock is released, as before. Release errors in
+these two recovery paths are best-effort, so a failed release can leave a claim
+queued.
+
 ## Harness adapters
 
 Each receiving harness needs explicit support: there is no standard for

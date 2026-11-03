@@ -159,49 +159,49 @@ func (s *Service) Reply(from addr.Address, query, body string) (Result, error) {
 	return s.Deliver(env)
 }
 
-// Drained is what a drain did.
-type Drained struct {
+// drainResult is what a drain did.
+type drainResult struct {
 	Pushed  []store.Message // handed to the harness
 	Pending []store.Message // claimed; the caller must hand these over
 }
 
-// Drain claims every pending message for id, in order, and pushes it through
+// drain claims every pending message for id, in order, and pushes it through
 // the agent's harness. A drain runs at session start and turn end, so it is
 // allowed to push when the recorded state is idle or was never reported; a
 // harness that cannot take a message mid-turn is left alone while it is busy.
 // When no push can be attempted, the messages are returned claimed for the
 // calling shim. A failed push releases the unhanded messages for a later retry.
-func (s *Service) Drain(id string) (Drained, error) {
+func (s *Service) drain(id string) (drainResult, error) {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	defer release()
 	return s.drainLocked(id)
 }
 
 // drainLocked runs one drain with the recipient's delivery lock held.
-func (s *Service) drainLocked(id string) (Drained, error) {
+func (s *Service) drainLocked(id string) (drainResult, error) {
 	agent, err := s.Store.Lookup(id)
 	if err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	msgs, err := s.Store.Mailbox(id, store.MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil || len(msgs) == 0 {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	h, ok := s.Harnesses.Lookup(agent.Harness)
 	if !ok || !agent.Live() || (!h.QueuesWhileBusy() && agent.State == store.AgentBusy) {
-		return Drained{Pending: msgs}, nil
+		return drainResult{Pending: msgs}, nil
 	}
 	pushed, rest := s.push(agent, h, msgs)
 	if err := s.release(id, rest); err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
-	return Drained{Pushed: pushed}, nil
+	return drainResult{Pushed: pushed}, nil
 }
 
-// Hold drains id's mailbox without pushing anything, for a harness that hands
+// hold drains id's mailbox without pushing anything, for a harness that hands
 // the messages to the agent itself. A turn-end hook is the case: the turn it
 // runs in is still running, so pushing would land the message inside that turn
 // instead of the next one. The messages come back claimed, in order, for the
@@ -211,29 +211,29 @@ func (s *Service) drainLocked(id string) (Drained, error) {
 // later message until a prompt, since no turn end would come to drain it. A
 // foreign stop hook that blocks again can make idle wrong, and a push then
 // lands in the running turn, which Claude Code takes at its next step.
-func (s *Service) Hold(id string) (Drained, error) {
+func (s *Service) hold(id string) (drainResult, error) {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	defer release()
 	if _, err := s.Store.Lookup(id); err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	msgs, err := s.Store.Mailbox(id, store.MailboxOptions{StoredOnly: true, Claim: true})
 	if err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	if len(msgs) > 0 {
-		return Drained{Pending: msgs}, nil
+		return drainResult{Pending: msgs}, nil
 	}
-	return Drained{}, s.Store.SetState(id, store.AgentIdle)
+	return drainResult{}, s.Store.SetState(id, store.AgentIdle)
 }
 
-// TurnStart records that the harness started a turn: the agent is busy and
+// turnStart records that the harness started a turn: the agent is busy and
 // the messages handed over for this turn are read. It waits for an in-flight
 // delivery, so a non-queueing harness is never pushed to after this returns.
-func (s *Service) TurnStart(id string) error {
+func (s *Service) turnStart(id string) error {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
 		return err
@@ -245,16 +245,16 @@ func (s *Service) TurnStart(id string) error {
 	return s.Store.MarkQueuedRead(id)
 }
 
-// TurnEnd records the agent idle and drains its mailbox under one lock, so a
+// turnEnd records the agent idle and drains its mailbox under one lock, so a
 // send cannot slip between publishing idle and draining the backlog.
-func (s *Service) TurnEnd(id string) (Drained, error) {
+func (s *Service) turnEnd(id string) (drainResult, error) {
 	release, err := s.Store.LockDelivery(id)
 	if err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	defer release()
 	if err := s.Store.SetState(id, store.AgentIdle); err != nil {
-		return Drained{}, err
+		return drainResult{}, err
 	}
 	return s.drainLocked(id)
 }
