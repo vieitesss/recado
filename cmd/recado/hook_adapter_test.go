@@ -68,6 +68,25 @@ func (*dialectHarness) PrepareHook(req harness.HookRequest) (harness.HookPlan, e
 
 func (*dialectHarness) FailOpen() bool { return false }
 
+// TestHookJSONAnswersEveryEvent: shims parse each hook's stdout, and "--json"
+// promises a document, so an event with nothing to hand over still prints one.
+func TestHookJSONAnswersEveryEvent(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	t.Setenv("RECADO_ADDR", "worker")
+	for _, event := range []string{"session-start", "turn-start", "turn-end"} {
+		out := decode[struct {
+			Pushed  []string  `json:"pushed"`
+			Pending []message `json:"pending"`
+		}](t, mustExec(t, a, "", "hook", "fake", event, "--json"))
+		if out.Pushed == nil || out.Pending == nil {
+			t.Errorf("%s --json = %+v, want empty lists", event, out)
+		}
+		if got := mustExec(t, a, "", "hook", "fake", event); got != "" {
+			t.Errorf("%s without --json printed %q, want nothing", event, got)
+		}
+	}
+}
+
 func TestUnknownHookEventKeepsErrorAndExitCode(t *testing.T) {
 	fake, _ := newTestApp(t, false)
 	claude := newClaudeApp(t)

@@ -22,6 +22,9 @@ const refused = new Set((process.env.REFUSE ?? "").split(",").filter(Boolean));
 const tools = {};
 const shells = {};
 const events = [];
+const failures = [];
+const logError = console.error;
+console.error = (...args) => { failures.push(args.join(" ")); logError(...args); };
 
 const ctx = {
 	session: {
@@ -115,6 +118,13 @@ const cases = {
 		result({ mode: (fs.statSync(process.env.RECADO_STATE_DIR + "/run").mode & 0o777).toString(8) });
 	},
 
+	async lifecycle() {
+		await emit("session.created", "ses_a");
+		await emit("session.execution.started", "ses_a");
+		await emit("session.execution.succeeded", "ses_a");
+		result({ failures });
+	},
+
 	async unknown() {
 		result({ reply: await push({ agent: "ses_gone", text: "for a session that is gone" }) });
 	},
@@ -146,6 +156,23 @@ func TestOpenCodeSessionStartDeliversBacklogOnce(t *testing.T) {
 	}
 	if msg, _ := prompts[0].(map[string]any); !strings.Contains(msg["text"].(string), "waiting before start") {
 		t.Errorf("the session received %v, want the backlog", prompts[0])
+	}
+}
+
+// TestOpenCodePluginCompletesALifecycleWithTheRealCLI: the plugin reads every
+// hook's response the same way, so a turn-start that printed nothing was logged
+// as a failed hook.
+func TestOpenCodePluginCompletesALifecycleWithTheRealCLI(t *testing.T) {
+	requireNode(t)
+	root := shimRoot(t)
+	bin, _ := realRecado(t, root)
+	got := runShimIn(t, root, "recado-plugin.js", Plugin(), openCodeRunner, map[string]string{
+		"SCENARIO":         "lifecycle",
+		"RECADO_STATE_DIR": filepath.Join(root, "state"),
+		"PATH":             bin + ":/usr/bin:/bin",
+	}, 10*time.Second)
+	if failures, _ := got["failures"].([]any); len(failures) != 0 {
+		t.Errorf("the lifecycle logged failures: %v", failures)
 	}
 }
 

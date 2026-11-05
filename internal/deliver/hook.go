@@ -44,11 +44,9 @@ func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, 
 		if err := s.ensureHookAgent(agent); err != nil {
 			return err
 		}
+		// A turn start drains nothing, but the shim still reads its answer.
 		if err := s.turnStart(id); err != nil {
 			return err
-		}
-		if plan.WriteResponse == nil {
-			return nil
 		}
 	case "turn-end":
 		if err := s.ensureHookAgent(agent); err != nil {

@@ -208,11 +208,17 @@ func TestHookTurnStartMarksHeldMessagesReadAndUsesAdapterResponse(t *testing.T) 
 
 	out.Reset()
 	plan.WriteResponse = nil
-	standard := func(io.Writer, []store.Message, []store.Message, bool) error {
-		return errors.New("standard response must not be written at turn start")
+	// Without an adapter response a turn start still answers in the standard
+	// format, with nothing drained: shims read every hook's output.
+	standard := func(w io.Writer, pushed, pending []store.Message, json bool) error {
+		_, err := fmt.Fprintf(w, "standard pushed=%d pending=%d json=%t\n", len(pushed), len(pending), json)
+		return err
 	}
-	if err := f.svc.Hook(agent, plan, &out, false, standard); err != nil || out.Len() != 0 {
-		t.Fatalf("default turn-start = %q, %v; want silent", out.String(), err)
+	if err := f.svc.Hook(agent, plan, &out, true, standard); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != "standard pushed=0 pending=0 json=true\n" {
+		t.Fatalf("default turn-start = %q, want the standard response with nothing drained", got)
 	}
 }
 
