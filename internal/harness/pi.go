@@ -114,7 +114,7 @@ var piExtension string
 
 // shimVersion changes whenever the extension's text does, so setup can tell an
 // outdated shim of ours from a file someone else wrote.
-const shimVersion = "3"
+const shimVersion = "4"
 
 // Extension is the file `recado skill setup` installs into Pi, version-stamped
 // on its first line.

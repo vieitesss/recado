@@ -612,7 +612,7 @@ func TestSkillManagesThePiExtension(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(data), `// recado-shim: "3"`+"\n") {
+	if !strings.HasPrefix(string(data), `// recado-shim: "4"`+"\n") {
 		t.Errorf("the installed extension is not version-stamped: %q", string(data[:40]))
 	}
 	if out := mustExec(t, a, "", "skill", "status"); !strings.Contains(lineWith(out, shimPath), "current") {

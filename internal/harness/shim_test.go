@@ -36,6 +36,8 @@ case "$FAKE_RECADO" in
 pending) printf '{"pushed":[],"pending":[{"text":"handed over by the hook"}]}\n' ;;
 turnend) if [ "$3" = "turn-end" ]; then printf '{"pushed":[],"pending":[{"text":"handed over at turn end"}]}\n'; else printf '{"pushed":[],"pending":[]}\n'; fi ;;
 fail) echo "recado: the state directory is not writable" >&2; exit 2 ;;
+empty) ;;
+garbage) printf 'not json\n' ;;
 hang) exec sleep 60 ;;
 *) printf '{"pushed":[],"pending":[]}\n' ;;
 esac
@@ -241,6 +243,15 @@ switch (scenario) {
 		streaming = false;
 		await fire("session_shutdown", ctx);
 		result({ reply, sends });
+		break;
+	}
+	case "lifecycle": {
+		const ctx = ctxFor("a-session");
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await fire("agent_end", ctx);
+		await fire("session_shutdown", ctx);
+		result({ errors, sends });
 		break;
 	}
 	case "timeout": {
@@ -544,6 +555,59 @@ func TestPiExtensionGivesUpOnAWedgeRecado(t *testing.T) {
 	}
 	if errors, _ := got["errors"].([]any); len(errors) == 0 {
 		t.Error("a wedge recado left no notice for the human")
+	} else if notice, _ := errors[0].(string); !strings.Contains(notice, "did not answer") {
+		t.Errorf("the notice = %q, want it to say recado did not answer", notice)
+	}
+}
+
+// TestPiExtensionCompletesALifecycleWithTheRealCLI: every event the extension
+// reports must return what its hook expects, or the human sees a failure notice
+// on a hook that worked. Only the real CLI can break that contract.
+func TestPiExtensionCompletesALifecycleWithTheRealCLI(t *testing.T) {
+	requireNode(t)
+	root := shimRoot(t)
+	bin, _ := realRecado(t, root)
+	got := runShimIn(t, root, "recado.ts", Extension(), piRunner, map[string]string{
+		"SCENARIO":         "lifecycle",
+		"RECADO_STATE_DIR": filepath.Join(root, "state"),
+		"PATH":             bin + ":/usr/bin:/bin",
+	}, 10*time.Second)
+	if errors, _ := got["errors"].([]any); len(errors) != 0 {
+		t.Errorf("the lifecycle left notices: %v", errors)
+	}
+}
+
+// TestPiExtensionNamesWhyAHookFailed: the notice is all the human gets, so each
+// failure says what went wrong instead of blaming PATH for all of them.
+func TestPiExtensionNamesWhyAHookFailed(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"recado is missing", map[string]string{"PATH": t.TempDir()}, "not on PATH"},
+		{"recado fails", map[string]string{"FAKE_RECADO": "fail"}, "the state directory is not writable"},
+		{"recado prints nothing", map[string]string{"FAKE_RECADO": "empty"}, "unusable response"},
+		{"recado prints garbage", map[string]string{"FAKE_RECADO": "garbage"}, "unusable response"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{"SCENARIO": "timeout"}
+			for name, value := range c.env {
+				env[name] = value
+			}
+			got := runShim(t, "recado.ts", Extension(), piRunner, env, 10*time.Second)
+			errors, _ := got["errors"].([]any)
+			if len(errors) != 1 {
+				t.Fatalf("the notices = %v, want one", got["errors"])
+			}
+			notice, _ := errors[0].(string)
+			if !strings.Contains(notice, c.want) {
+				t.Errorf("the notice = %q, want it to contain %q", notice, c.want)
+			}
+			if strings.Contains(c.want, "PATH") != strings.Contains(notice, "PATH") {
+				t.Errorf("the notice = %q blames PATH for the wrong failure", notice)
+			}
+		})
 	}
 }
 
