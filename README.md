@@ -91,6 +91,21 @@ tells each one which `recado` line to report back with.
 
 Any other program can send: `recado send` is a shell command.
 
+## Rex
+
+recado supports the Rex terminal out of the box, with nothing to configure. An
+agent started in Rex records its Rex session and block, and `recado agents`
+shows the session's current label:
+
+```sh
+recado agents                       # ... rex=login
+recado agents --rex-session login   # only the agents in that Rex session
+```
+
+`--rex-session` takes a session id or label, and also works with
+`--machine`. The label is looked up through `rex ls` when listing, so a renamed
+session shows its new label; without `rex` on `PATH` the listing just omits it.
+
 ## Across machines
 
 Register a machine with how to run a command there, then address agents on it:
