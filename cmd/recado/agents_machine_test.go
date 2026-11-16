@@ -166,3 +166,31 @@ func TestRemoteAgentsWithoutRecadoFailsImmediately(t *testing.T) {
 		t.Errorf("missing remote recado: exit %d: %v", exitCode(err), err)
 	}
 }
+
+// An id the remote could not have registered is not an address send can use.
+func TestRemoteAgentsRejectsAnInvalidID(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	a.Machines = cannedRemote(t, `{"agents":[{"id":"../etc","harness":"fake","pid":1,"live":true}]}`)
+
+	_, err := exec(t, a, "", "agents", "--machine", "rpi")
+	if err == nil || !strings.Contains(err.Error(), "invalid agents response") || !strings.Contains(err.Error(), "../etc") {
+		t.Errorf("invalid remote id: %v, want an invalid agents response naming the id", err)
+	}
+}
+
+// A remote cwd lives under the remote's home, so the listing prints it whole.
+func TestRemoteAgentsKeepsTheCWDAbsolute(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := filepath.Join(home, "src", "recado")
+	a, _ := newTestApp(t, false)
+	a.Machines = cannedRemote(t, `{"agents":[{"id":"sub-1","harness":"fake","pid":1,"live":true,"state":"idle","cwd":"`+cwd+`"}]}`)
+
+	if text := mustExec(t, a, "", "agents", "--machine", "rpi"); !strings.Contains(text, " cwd="+cwd) {
+		t.Errorf("remote text = %q, want cwd=%s", text, cwd)
+	}
+	registerNamed(t, a, "sub-2", "sb", cwd)
+	if text := mustExec(t, a, "", "agents"); !strings.Contains(text, " cwd=~/src/recado") {
+		t.Errorf("local text = %q, want cwd=~/src/recado", text)
+	}
+}

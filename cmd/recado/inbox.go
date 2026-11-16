@@ -64,7 +64,7 @@ of recado's delivery path: recovery and debugging, never the normal path.
 	cmd.Flags().BoolVar(&peek, "peek", false, "list without claiming the messages")
 	cmd.Flags().BoolVar(&all, "all", false, "include messages already read")
 	cmd.Flags().Var(meta, "meta", "only messages carrying this metadata (repeatable)")
-	cmd.Flags().StringVar(&as, "as", "", "list this agent's mailbox (default: whoami)")
+	cmd.Flags().StringVar(&as, "as", "", "list this agent's mailbox, by id or name (default: whoami)")
 	return cmd
 }
 
@@ -159,7 +159,7 @@ labels; each entry's address is recado://NAME/<id>, ready for send.`,
 					Agents []agent `json:"agents"`
 				}{agents})
 			}
-			return printAgents(cmd.OutOrStdout(), agents)
+			return printAgents(cmd.OutOrStdout(), agents, machine == "" || machine == addr.LocalMachine)
 		}),
 	}
 	cmd.Flags().StringVar(&machine, "machine", "", "list this machine's agents (default: local)")
@@ -222,8 +222,8 @@ func (a *app) remoteAgents(machine string) ([]agent, error) {
 		return nil, fmt.Errorf("machine %q: invalid agents response: %w", machine, err)
 	}
 	for i := range response.Agents {
-		if response.Agents[i].ID == "" {
-			return nil, fmt.Errorf("machine %q: invalid agents response: an entry has no id", machine)
+		if id := response.Agents[i].ID; !addr.ValidID(id) {
+			return nil, fmt.Errorf("machine %q: invalid agents response: agent id %q", machine, id)
 		}
 		// Also fills the address in when the remote runs an older recado that
 		// does not report one.
@@ -232,7 +232,9 @@ func (a *app) remoteAgents(machine string) ([]agent, error) {
 	return response.Agents, nil
 }
 
-func printAgents(w io.Writer, agents []agent) error {
+// printAgents writes one line per agent. Only a local listing abbreviates the
+// home directory: a remote cwd is under that machine's home, not this one's.
+func printAgents(w io.Writer, agents []agent, local bool) error {
 	for _, ag := range agents {
 		life := "gone"
 		if ag.Live {
@@ -251,7 +253,11 @@ func printAgents(w io.Writer, agents []agent) error {
 			}
 		}
 		if ag.CWD != "" {
-			if _, err := fmt.Fprintf(w, " cwd=%s", shortenHome(ag.CWD)); err != nil {
+			cwd := ag.CWD
+			if local {
+				cwd = shortenHome(cwd)
+			}
+			if _, err := fmt.Fprintf(w, " cwd=%s", cwd); err != nil {
 				return err
 			}
 		}

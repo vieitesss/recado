@@ -960,6 +960,31 @@ func TestSendToAmbiguousNameListsMatches(t *testing.T) {
 	}
 }
 
+func TestInboxAsAgentNameReadsItsMailbox(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	namedAgent(t, a, "sub-4123", "sb", "/work/recado", os.Getpid())
+	t.Setenv("RECADO_ADDR", "manager")
+	mustExec(t, a, "", "send", "sub-4123", "hi")
+
+	inbox := decode[struct {
+		Messages []message `json:"messages"`
+	}](t, mustExec(t, a, "", "inbox", "--peek", "--as", "sb", "--json"))
+	if len(inbox.Messages) != 1 || inbox.Messages[0].Envelope.To.String() != "recado://local/sub-4123" {
+		t.Errorf("inbox --as sb = %+v, want the message sent to sub-4123", inbox.Messages)
+	}
+}
+
+func TestInboxAsAmbiguousNameFails(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	namedAgent(t, a, "sub-4123", "sb", "/work/one", os.Getpid())
+	namedAgent(t, a, "sub-4188", "sb", "/work/two", os.Getpid())
+
+	_, err := exec(t, a, "", "inbox", "--peek", "--as", "sb")
+	if exitCode(err) != 2 || !strings.Contains(err.Error(), "sub-4123") || !strings.Contains(err.Error(), "sub-4188") {
+		t.Errorf("inbox --as an ambiguous name: exit %d: %v", exitCode(err), err)
+	}
+}
+
 func TestAgentsShowsARetiredSessionGone(t *testing.T) {
 	a, fake := newTestApp(t, false)
 	fake.Single = true

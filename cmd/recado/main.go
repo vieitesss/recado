@@ -188,7 +188,8 @@ func envAddr() (addr.Address, bool, error) {
 }
 
 // target is the mailbox a listing command works on: --as ADDR, else the
-// caller.
+// caller. ADDR names an agent the way send's TO does: an id, or the name of
+// one live agent. An id nobody registered still names its mailbox.
 func (a *app) target(as string) (addr.Address, error) {
 	if as == "" {
 		return a.whoami()
@@ -200,7 +201,18 @@ func (a *app) target(as string) (addr.Address, error) {
 	if !t.IsLocal() {
 		return addr.Address{}, usagef("%s: machines not supported yet", t)
 	}
-	return t, nil
+	st, err := a.store()
+	if err != nil {
+		return addr.Address{}, err
+	}
+	ag, err := st.ResolveRecipient(t.Agent)
+	switch {
+	case errors.Is(err, store.ErrUnknownAgent):
+		return t, nil
+	case err != nil:
+		return addr.Address{}, err
+	}
+	return addr.Local(ag.ID), nil
 }
 
 // registry is the entry a session-start hook writes.
