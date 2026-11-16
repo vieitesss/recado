@@ -29,9 +29,13 @@ recado skill setup
 recado --version
 ```
 
-The script installs to `~/.local/bin` (set `RECADO_INSTALL_DIR` to change it),
-and `RECADO_VERSION=v0.1.0` pins a release. It verifies the download against
-the release's `checksums.txt`.
+The script installs to `~/.local/bin` and verifies the download against the
+release's `checksums.txt`. Set variables on `sh` to change where it installs or
+to pin a release:
+
+```sh
+curl -fsSL https://recado.vieitesss.eu/install | RECADO_INSTALL_DIR=~/bin RECADO_VERSION=v0.1.0 sh
+```
 
 `recado skill setup` installs the skill agents read and the shim each
 receiving harness needs: hooks merged into `~/.claude/settings.json`, an
@@ -50,6 +54,10 @@ the session; set `RECADO_ADDR` to choose one yourself.
 recado whoami                       # recado://local/manager-4123
 recado agents                       # every registered agent, live or gone
 ```
+
+`recado agents` also shows each agent's name: the repository or directory its
+session started in. You can send to a name instead of an id when it names one
+live agent; if several match, recado lists them and exits 2.
 
 Agents use three commands:
 
@@ -79,7 +87,7 @@ tells each one which `recado` line to report back with.
 | Claude Code ≥ 2.1.224 | yes | yes | woken only while idle; otherwise delivered when its turn ends |
 | Pi ≥ 1.2.0 | yes | yes | queued after the running tool calls |
 | OpenCode ≥ 2.0.0 | yes | yes | queued while busy |
-| Codex | no | yes | no way to start a turn from outside yet; set `RECADO_ADDR` |
+| Codex | no | yes | set `RECADO_ADDR` to give it an address; replies to it fail, so it can report but not `ask` |
 
 Any other program can send: `recado send` is a shell command.
 
