@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/vieitesss/recado/internal/addr"
+	"github.com/vieitesss/recado/internal/deliver"
 	"github.com/vieitesss/recado/internal/store"
 )
 
@@ -96,10 +101,31 @@ short id send printed belongs to the recipient's mailbox.`,
 	}
 }
 
+// agent is one entry in an agents listing. Address is the recipient form of the
+// entry, so whichever machine listed it, it can go straight into send.
+// A listing from a newer remote may carry keys this struct does not know;
+// encoding/json ignores them.
+type agent struct {
+	ID      string `json:"id"`
+	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
+	Harness string `json:"harness"`
+	PID     int    `json:"pid"`
+	Live    bool   `json:"live"`
+	State   string `json:"state"`
+	CWD     string `json:"cwd,omitempty"`
+	RexID   string `json:"rex_session,omitempty"`
+	RexBlk  string `json:"rex_block,omitempty"`
+	RexName string `json:"rex_label,omitempty"`
+}
+
 func (a *app) newAgentsCmd() *cobra.Command {
-	var rexSession string
+	var (
+		machine    string
+		rexSession string
+	)
 	cmd := &cobra.Command{
-		Use:   "agents [--rex-session NAME]",
+		Use:   "agents [--machine NAME] [--rex-session NAME]",
 		Short: "List registered agents, live or gone",
 		Long: `List every agent in the registry, live or gone.
 
@@ -110,84 +136,135 @@ live agent. The cwd is the session-start snapshot, with $HOME written as ~.
 
 An entry whose session-start hook saw REX_SESSION records it, and the Rex
 session's label is resolved when listing, because a label can be renamed.
---rex-session keeps the entries whose Rex session id or label is NAME.`,
+--rex-session keeps the entries whose Rex session id or label is NAME.
+
+--machine NAME lists the agents on a configured machine, through the same
+transport send uses. That machine's registry decides liveness, names and Rex
+labels; each entry's address is recado://NAME/<id>, ready for send.`,
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			st, err := a.store()
+			list, err := a.listAgents(machine)
 			if err != nil {
 				return err
 			}
-			list, err := st.List()
-			if err != nil {
-				return err
-			}
-			type agent struct {
-				ID      string `json:"id"`
-				Name    string `json:"name,omitempty"`
-				Harness string `json:"harness"`
-				PID     int    `json:"pid"`
-				Live    bool   `json:"live"`
-				State   string `json:"state"`
-				CWD     string `json:"cwd,omitempty"`
-				RexID   string `json:"rex_session,omitempty"`
-				RexBlk  string `json:"rex_block,omitempty"`
-				RexName string `json:"rex_label,omitempty"`
-			}
-			labels := a.rexLabels(list)
 			agents := make([]agent, 0, len(list))
 			for _, ag := range list {
-				label := labels[ag.RexSession]
-				if rexSession != "" && ag.RexSession != rexSession && label != rexSession {
+				if rexSession != "" && ag.RexID != rexSession && ag.RexName != rexSession {
 					continue
 				}
-				agents = append(agents, agent{
-					ID: ag.ID, Name: ag.Display, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(),
-					State: string(ag.State), CWD: ag.CWD,
-					RexID: ag.RexSession, RexBlk: ag.RexBlock, RexName: label,
-				})
+				agents = append(agents, ag)
 			}
 			if jsonFlag(cmd) {
 				return printJSON(cmd.OutOrStdout(), struct {
 					Agents []agent `json:"agents"`
 				}{agents})
 			}
-			w := cmd.OutOrStdout()
-			for _, ag := range agents {
-				life := "gone"
-				if ag.Live {
-					life = "live"
-				}
-				state := ag.State
-				if state == "" {
-					state = "unknown"
-				}
-				if _, err := fmt.Fprintf(w, "%-28s %-5s %-10s pid=%-6d state=%s", ag.ID, life, ag.Harness, ag.PID, state); err != nil {
-					return err
-				}
-				if ag.Name != "" {
-					if _, err := fmt.Fprintf(w, " name=%s", ag.Name); err != nil {
-						return err
-					}
-				}
-				if ag.CWD != "" {
-					if _, err := fmt.Fprintf(w, " cwd=%s", shortenHome(ag.CWD)); err != nil {
-						return err
-					}
-				}
-				if ag.RexName != "" {
-					if _, err := fmt.Fprintf(w, " rex=%s", ag.RexName); err != nil {
-						return err
-					}
-				}
-				if _, err := fmt.Fprintln(w); err != nil {
-					return err
-				}
-			}
-			return nil
+			return printAgents(cmd.OutOrStdout(), agents)
 		}),
 	}
+	cmd.Flags().StringVar(&machine, "machine", "", "list this machine's agents (default: local)")
 	cmd.Flags().StringVar(&rexSession, "rex-session", "", "only agents in this Rex session (id or label)")
 	return cmd
+}
+
+// listAgents is the registry's view: this machine's, or a remote machine's
+// listing as that machine computed it.
+func (a *app) listAgents(machine string) ([]agent, error) {
+	if machine == "" || machine == addr.LocalMachine {
+		return a.localAgents()
+	}
+	return a.remoteAgents(machine)
+}
+
+func (a *app) localAgents() ([]agent, error) {
+	st, err := a.store()
+	if err != nil {
+		return nil, err
+	}
+	list, err := st.List()
+	if err != nil {
+		return nil, err
+	}
+	labels := a.rexLabels(list)
+	agents := make([]agent, 0, len(list))
+	for _, ag := range list {
+		agents = append(agents, agent{
+			ID: ag.ID, Address: addr.Local(ag.ID).String(), Name: ag.Display, Harness: ag.Harness,
+			PID: ag.PID, Live: ag.Live(), State: string(ag.State), CWD: ag.CWD,
+			RexID: ag.RexSession, RexBlk: ag.RexBlock, RexName: labels[ag.RexSession],
+		})
+	}
+	return agents, nil
+}
+
+// remoteAgents runs `recado agents --json` on machine. The remote owns its
+// registry, so it decides liveness, names and Rex labels; only the address is
+// rewritten here, because only this side knows the machine's name.
+func (a *app) remoteAgents(machine string) ([]agent, error) {
+	registry, err := a.machineRegistry()
+	if err != nil {
+		return nil, err
+	}
+	remote, err := deliver.RemoteCommand(registry, machine, "agents", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var stderr bytes.Buffer
+	remote.Stderr = &stderr
+	out, err := remote.Output()
+	if err != nil {
+		return nil, deliver.RemoteFailure(machine, err, stderr.String())
+	}
+	var response struct {
+		Agents []agent `json:"agents"`
+	}
+	if err := json.Unmarshal(out, &response); err != nil {
+		return nil, fmt.Errorf("machine %q: invalid agents response: %w", machine, err)
+	}
+	for i := range response.Agents {
+		if response.Agents[i].ID == "" {
+			return nil, fmt.Errorf("machine %q: invalid agents response: an entry has no id", machine)
+		}
+		// Also fills the address in when the remote runs an older recado that
+		// does not report one.
+		response.Agents[i].Address = addr.Address{Machine: machine, Agent: response.Agents[i].ID}.String()
+	}
+	return response.Agents, nil
+}
+
+func printAgents(w io.Writer, agents []agent) error {
+	for _, ag := range agents {
+		life := "gone"
+		if ag.Live {
+			life = "live"
+		}
+		state := ag.State
+		if state == "" {
+			state = "unknown"
+		}
+		if _, err := fmt.Fprintf(w, "%-28s %-5s %-10s pid=%-6d state=%s", ag.ID, life, ag.Harness, ag.PID, state); err != nil {
+			return err
+		}
+		if ag.Name != "" {
+			if _, err := fmt.Fprintf(w, " name=%s", ag.Name); err != nil {
+				return err
+			}
+		}
+		if ag.CWD != "" {
+			if _, err := fmt.Fprintf(w, " cwd=%s", shortenHome(ag.CWD)); err != nil {
+				return err
+			}
+		}
+		if ag.RexName != "" {
+			if _, err := fmt.Fprintf(w, " rex=%s", ag.RexName); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *app) newWhoamiCmd() *cobra.Command {

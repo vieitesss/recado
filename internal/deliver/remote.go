@@ -36,6 +36,24 @@ func RemoteCommand(registry *machine.Registry, name string, args ...string) (*ex
 	return exec.Command(prefix[0], argv...), nil
 }
 
+// RemoteFailure reports a failed command run on machine: recado missing there,
+// the remote rejecting the input, or the transport itself failing. Every
+// command sent over a machine transport says it the same way.
+func RemoteFailure(machine string, err error, stderr string) error {
+	detail := strings.TrimSpace(stderr)
+	var exit *exec.ExitError
+	if (errors.As(err, &exit) && exit.ExitCode() == 127) || (strings.Contains(detail, "recado") && (strings.Contains(detail, "executable file not found") || strings.Contains(detail, "command not found") || strings.Contains(detail, "not found"))) {
+		return fmt.Errorf("machine %q: recado is not installed or not on PATH: %s", machine, detail)
+	}
+	if errors.As(err, &exit) && exit.ExitCode() == 2 {
+		return fmt.Errorf("%w on machine %q: %s", ErrRemoteUsage, machine, detail)
+	}
+	if detail != "" {
+		return fmt.Errorf("machine %q transport failed: %w: %s", machine, err, detail)
+	}
+	return fmt.Errorf("machine %q transport failed: %w", machine, err)
+}
+
 // deliverRemote sends one rewritten envelope over the configured transport.
 // A successful remote deliver reports the recipient's short id and push state.
 func (s *Service) deliverRemote(env envelope.Envelope, from, to addr.Address) (Result, error) {
@@ -63,18 +81,7 @@ func (s *Service) deliverRemote(env envelope.Envelope, from, to addr.Address) (R
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		detail := strings.TrimSpace(stderr.String())
-		if (errors.As(err, &exit) && exit.ExitCode() == 127) || (strings.Contains(detail, "recado") && (strings.Contains(detail, "executable file not found") || strings.Contains(detail, "command not found") || strings.Contains(detail, "not found"))) {
-			return Result{}, fmt.Errorf("machine %q: recado is not installed or not on PATH: %s", to.Machine, detail)
-		}
-		if errors.As(err, &exit) && exit.ExitCode() == 2 {
-			return Result{}, fmt.Errorf("%w on machine %q: %s", ErrRemoteUsage, to.Machine, detail)
-		}
-		if detail != "" {
-			return Result{}, fmt.Errorf("machine %q transport failed: %w: %s", to.Machine, err, detail)
-		}
-		return Result{}, fmt.Errorf("machine %q transport failed: %w", to.Machine, err)
+		return Result{}, RemoteFailure(to.Machine, err, stderr.String())
 	}
 	var response struct {
 		Delivered []struct {

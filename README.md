@@ -98,6 +98,7 @@ Register a machine with how to run a command there, then address agents on it:
 ```sh
 recado machine add rpi ssh rpi          # NAME KIND TARGET
 recado machine add web docker web       # also: podman
+recado agents --machine rpi             # the agents running there
 recado send rpi/sub-1 "Deploy the staging build."
 ```
 
