@@ -79,7 +79,7 @@ func DefaultRoot() (string, error) {
 }
 
 // Open returns the store rooted at root, creating it if needed and enforcing
-// the 0700 directory mode the design promises.
+// the 0700 directory mode recado promises.
 func Open(root string) (*Store, error) {
 	if err := ensureDir(root); err != nil {
 		return nil, err

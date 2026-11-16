@@ -40,7 +40,7 @@ type exitError struct {
 func (e exitError) Error() string { return e.err.Error() }
 func (e exitError) Unwrap() error { return e.err }
 
-// exitCode is the design's contract: 0 success, 1 failure, 2 usage error or
+// exitCode is the CLI's contract: 0 success, 1 failure, 2 usage error or
 // unknown address. Untyped errors are cobra's own (unknown command, bad flag,
 // wrong arguments), which are usage errors.
 func exitCode(err error) int {
@@ -220,8 +220,8 @@ func (a *app) registry(h harness.Harness, id string) store.Agent {
 }
 
 // agentPID is the process liveness is checked against. A hook exits at once,
-// so its own pid would make every agent look gone: use the launcher's
-// RECADO_PID when it knows it, else the hook's parent process.
+// so its own pid would make every agent look gone: use the starting
+// process's RECADO_PID when it knows it, else the hook's parent process.
 func agentPID() int {
 	if v := os.Getenv("RECADO_PID"); v != "" {
 		if pid, err := strconv.Atoi(v); err == nil && pid > 0 {
