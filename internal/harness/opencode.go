@@ -51,6 +51,10 @@ func (o *OpenCode) Detect(env []string) (string, bool) {
 // "queue" mid-turn becomes its own turn once the running one ends.
 func (o *OpenCode) QueuesWhileBusy() bool { return true }
 
+// SingleSession reports that OpenCode's shared server runs several sessions at
+// once, so a session start retires none of the ids it registered.
+func (o *OpenCode) SingleSession() bool { return false }
+
 // Push writes one JSON frame to the socket the OpenCode plugin listens on. The
 // frame names the agent because one plugin process serves every session it
 // knows; the text is rendered by the delivery layer. The push waits for the

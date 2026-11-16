@@ -833,3 +833,18 @@ func TestSkillLeavesAForeignOpenCodePluginAlone(t *testing.T) {
 		t.Errorf("the foreign plugin changed: %q, %v", string(got), err)
 	}
 }
+
+func TestAgentsShowsARetiredSessionGone(t *testing.T) {
+	a, fake := newTestApp(t, false)
+	fake.Single = true
+	startSession(t, a, "old")
+	startSession(t, a, "new")
+
+	text := mustExec(t, a, "", "agents")
+	if got := lineWith(text, "old"); !strings.Contains(got, "gone") {
+		t.Errorf("agents line for the superseded id = %q, want gone", got)
+	}
+	if got := lineWith(text, "new"); !strings.Contains(got, "live") {
+		t.Errorf("agents line for the current session = %q, want live", got)
+	}
+}

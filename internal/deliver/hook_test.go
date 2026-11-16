@@ -344,3 +344,118 @@ func TestHookOutputFailureReleasesClaimsForRetry(t *testing.T) {
 		}
 	}
 }
+
+func TestHookSessionStartRetiresTheOldIDsOfAOneSessionProcess(t *testing.T) {
+	f := setup(t, false)
+	f.fake.Single = true
+	start := func(id string) {
+		t.Helper()
+		agent := store.Agent{ID: id, Harness: "fake", PID: os.Getpid()}
+		if err := f.svc.Hook(agent, harness.HookPlan{Event: "session-start"}, io.Discard, false, writePending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start("old-1")
+	start("old-2")
+	start("new")
+
+	for _, id := range []string{"old-1", "old-2"} {
+		a, err := f.st.Lookup(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.Live() {
+			t.Errorf("%s stayed live after a new id started in the same process", id)
+		}
+	}
+	a, err := f.st.Lookup("new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Live() {
+		t.Error("the session that just started is not live")
+	}
+}
+
+func TestHookSessionStartKeepsTheIDsOfAProcessThatServesSeveralSessions(t *testing.T) {
+	f := setup(t, false)
+	f.fake.Single = false
+	start := func(id string) {
+		t.Helper()
+		agent := store.Agent{ID: id, Harness: "fake", PID: os.Getpid()}
+		if err := f.svc.Hook(agent, harness.HookPlan{Event: "session-start"}, io.Discard, false, writePending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start("first")
+	start("second")
+
+	for _, id := range []string{"first", "second"} {
+		a, err := f.st.Lookup(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !a.Live() {
+			t.Errorf("%s was retired, though this harness serves several sessions per process", id)
+		}
+	}
+}
+
+func TestDeliverDoesNotPushToARetiredID(t *testing.T) {
+	f := setup(t, true)
+	f.fake.Single = true
+	for _, id := range []string{"old", "new"} {
+		agent := store.Agent{ID: id, Harness: "fake", PID: os.Getpid()}
+		if err := f.svc.Hook(agent, harness.HookPlan{Event: "session-start"}, io.Discard, false, writePending); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	msg, err := f.svc.Deliver(f.env(t, "asker", "old", envelope.KindMessage, "waiting", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Pushed {
+		t.Error("a message to a retired id was pushed")
+	}
+	if pushes, err := f.fake.Pushes(); err != nil || len(pushes) != 0 {
+		t.Fatalf("pushes = %+v, %v; want none for a retired id", pushes, err)
+	}
+	if got := f.state(t, "old", msg.Message.Envelope.ID); got != store.StateStored {
+		t.Fatalf("state = %q, want the message waiting in the retired mailbox", got)
+	}
+}
+
+func TestResumedSessionGetsTheMessagesThatWaitedForIt(t *testing.T) {
+	f := setup(t, true)
+	f.fake.Single = true
+	start := func(id string) {
+		t.Helper()
+		agent := store.Agent{ID: id, Harness: "fake", PID: os.Getpid()}
+		if err := f.svc.Hook(agent, harness.HookPlan{Event: "session-start"}, io.Discard, false, writePending); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start("old")
+	start("new")
+	msg, err := f.svc.Deliver(f.env(t, "asker", "old", envelope.KindMessage, "waiting", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start("old")
+
+	a, err := f.st.Lookup("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Live() {
+		t.Error("the resumed id is not live")
+	}
+	if got := f.state(t, "old", msg.Message.Envelope.ID); got != store.StateQueued {
+		t.Errorf("state after resume = %q, want the waiting message queued", got)
+	}
+	if pushes, err := f.fake.Pushes(); err != nil || len(pushes) != 1 {
+		t.Fatalf("pushes = %d, %v; want the waiting message handed to the resumed session", len(pushes), err)
+	}
+}

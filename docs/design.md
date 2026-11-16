@@ -152,6 +152,19 @@ exits; liveness is its pid. `send` to an id that was never registered fails
 at once (exit 2), so a typo never vanishes silently. Messages to a gone agent
 wait in its mailbox and arrive when a session with that id starts again.
 
+Claude Code and Pi run one session per process: `/clear`, `/new` and `/resume`
+start a new session id without ending the process. When an adapter reports that
+(`harness.SingleSession`), a session start that registers id X retires every
+other entry of the same pid and harness: it is rewritten atomically with
+`retired: true`, and `Live()` is false for it. So no idle push reaches an old
+id through the process still running, the relay does not count it as a sender,
+and `recado agents` prints it as `gone`. The mailbox is untouched: messages to
+a retired id wait and arrive if that id resumes, and a later session start for
+it re-registers the entry unretired and retires the others of that pid.
+OpenCode's shared server serves several sessions from one process, reports
+false, and retires nothing. Entries of another pid or harness are never
+touched.
+
 `recado hook HARNESS turn-start|turn-end` rewrites the entry atomically
 (temp file and rename, `0600`) with `state` (`busy` or `idle`) and `state_ts`
 (RFC 3339). An entry without them has never reported a turn, which a harness

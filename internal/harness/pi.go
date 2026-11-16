@@ -54,6 +54,10 @@ func (p *Pi) Detect(env []string) (string, bool) {
 // queued and delivered as its own user turn once the running turn ends.
 func (p *Pi) QueuesWhileBusy() bool { return true }
 
+// SingleSession reports that Pi opens /new and /resume as a new session id in
+// the same process, so the ids it registered before are gone.
+func (p *Pi) SingleSession() bool { return true }
+
 // Shims is the extension `recado skill setup` installs for Pi.
 func (p *Pi) Shims() []Shim {
 	f, err := p.shim()

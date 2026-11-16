@@ -133,6 +133,72 @@ func TestLivenessByPID(t *testing.T) {
 	}
 }
 
+func TestRetireOthers(t *testing.T) {
+	s, root := open(t)
+	register(t, s, "old", os.Getpid())
+	register(t, s, "new", os.Getpid())
+	register(t, s, "elsewhere", deadPID)
+
+	if err := s.RetireOthers(os.Getpid(), "fake", "new"); err != nil {
+		t.Fatal(err)
+	}
+
+	old, err := s.Lookup("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !old.Retired {
+		t.Error("the superseded id is not retired")
+	}
+	if old.Live() {
+		t.Error("a retired id kept its process's liveness")
+	}
+	kept, err := s.Lookup("new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Retired || !kept.Live() {
+		t.Errorf("the session that just started = retired %v, live %v; want live", kept.Retired, kept.Live())
+	}
+	other, err := s.Lookup("elsewhere")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Retired {
+		t.Error("retiring one process retired an entry of another")
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "agents", "old.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(fields["retired"]); got != "true" {
+		t.Errorf("agents/old.json retired = %s, want true", got)
+	}
+}
+
+func TestRegisterUnretiresAResumedID(t *testing.T) {
+	s, _ := open(t)
+	register(t, s, "old", os.Getpid())
+	if err := s.RetireOthers(os.Getpid(), "fake", "new"); err != nil {
+		t.Fatal(err)
+	}
+
+	register(t, s, "old", os.Getpid())
+
+	got, err := s.Lookup("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Retired || !got.Live() {
+		t.Errorf("a resumed id = retired %v, live %v; want live", got.Retired, got.Live())
+	}
+}
+
 func TestSetState(t *testing.T) {
 	s, root := open(t)
 	register(t, s, "sub-1", os.Getpid())

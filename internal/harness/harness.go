@@ -104,6 +104,16 @@ type Settings interface {
 	HookSettings() (skill.Hooks, error)
 }
 
+// SingleSession is the optional capability of a harness whose process runs one
+// session at a time. Claude Code and Pi open /clear, /new or /resume as a new
+// session id in the same process, so the ids that process registered before
+// belong to no session any more. OpenCode's shared server runs several at once
+// and reports false.
+type SingleSession interface {
+	// SingleSession reports whether a process of this harness runs one session.
+	SingleSession() bool
+}
+
 // Set is the harnesses this binary knows.
 type Set []Harness
 

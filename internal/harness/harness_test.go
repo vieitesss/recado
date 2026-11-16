@@ -19,3 +19,23 @@ func TestSetLookupAndDetect(t *testing.T) {
 		t.Errorf("Detect(fake env) = %v, %q, %v; want the fake harness and sub-1", h, id, ok)
 	}
 }
+
+func TestSingleSessionIsAPerHarnessCapability(t *testing.T) {
+	for _, name := range []string{"claude", "pi"} {
+		h, ok := Default().Lookup(name)
+		if !ok {
+			t.Fatalf("Default() has no %s harness", name)
+		}
+		single, ok := h.(SingleSession)
+		if !ok || !single.SingleSession() {
+			t.Errorf("%s does not report one session per process, so /clear leaves its old ids live", name)
+		}
+	}
+	h, ok := Default().Lookup("opencode")
+	if !ok {
+		t.Fatal("Default() has no opencode harness")
+	}
+	if single, ok := h.(SingleSession); !ok || single.SingleSession() {
+		t.Error("opencode reports one session per process, though its shared server serves several")
+	}
+}

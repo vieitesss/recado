@@ -68,6 +68,10 @@ func (c *Claude) Detect(env []string) (string, bool) {
 // the running turn at the next step, so recado never pushes mid-turn.
 func (c *Claude) QueuesWhileBusy() bool { return false }
 
+// SingleSession reports that Claude Code opens /clear, /new and /resume as a
+// new session id in the same process, so the ids it registered before are gone.
+func (c *Claude) SingleSession() bool { return true }
+
 // DefaultHook is the ordinary shim protocol. The installed Claude flags also
 // retain their historical meaning for callers without a custom hook dialect.
 func DefaultHook(req HookRequest) HookPlan {

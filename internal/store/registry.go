@@ -42,11 +42,14 @@ type Agent struct {
 	Started    time.Time  `json:"started"`
 	State      AgentState `json:"state,omitempty"`
 	StateTS    string     `json:"state_ts,omitempty"`
+	Retired    bool       `json:"retired,omitempty"` // a later id took this process's session over
 }
 
-// Live reports whether the agent's process is still running.
+// Live reports whether the agent's session is still there: its process runs and
+// an id it registered later did not supersede it. A retired id keeps its
+// mailbox, so messages still wait for it and arrive if it resumes.
 func (a Agent) Live() bool {
-	if a.PID <= 0 {
+	if a.Retired || a.PID <= 0 {
 		return false
 	}
 	err := syscall.Kill(a.PID, 0)
@@ -87,6 +90,32 @@ func (s *Store) Register(a Agent) error {
 		return err
 	}
 	tmp = nil
+	return nil
+}
+
+// RetireOthers marks every entry of pid and harnessName other than keepID
+// retired, with the same atomic rewrite Register uses. It is for a harness that
+// runs one session per process: a session start with a new id supersedes the
+// ids that process registered before, so no idle push or relay sender reaches
+// the old ones. Entries of another pid or harness are untouched, and an entry
+// already retired is left alone.
+func (s *Store) RetireOthers(pid int, harnessName, keepID string) error {
+	if pid <= 0 {
+		return nil // no process identity, so nothing is superseded
+	}
+	agents, err := s.List()
+	if err != nil {
+		return err
+	}
+	for _, a := range agents {
+		if a.ID == keepID || a.PID != pid || a.Harness != harnessName || a.Retired {
+			continue
+		}
+		a.Retired = true
+		if err := s.Register(a); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

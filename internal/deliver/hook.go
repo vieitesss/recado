@@ -35,6 +35,9 @@ func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, 
 		if err := s.Store.Register(agent); err != nil {
 			return err
 		}
+		if err := s.retirePrior(agent); err != nil {
+			return err
+		}
 		drained, err = s.drain(id)
 		if err == nil && plan.KeepPending && len(drained.Pending) > 0 {
 			_ = s.release(id, drained.Pending)
@@ -72,6 +75,22 @@ func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, 
 		return err
 	}
 	return nil
+}
+
+// retirePrior marks the ids this agent's process registered before retired,
+// for a harness that runs one session at a time: the session that just started
+// supersedes them, so an idle push or a relay sender check never reaches an old
+// id through the shared pid. A harness that serves several sessions from one
+// process retires nothing.
+func (s *Service) retirePrior(agent store.Agent) error {
+	h, ok := s.Harnesses.Lookup(agent.Harness)
+	if !ok {
+		return nil
+	}
+	if single, ok := h.(harness.SingleSession); !ok || !single.SingleSession() {
+		return nil
+	}
+	return s.Store.RetireOthers(agent.PID, agent.Harness, agent.ID)
 }
 
 // ensureHookAgent registers the agent if this is the first hook it fired.

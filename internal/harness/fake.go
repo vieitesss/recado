@@ -18,6 +18,7 @@ import (
 type Fake struct {
 	Dir       string // where pushes.jsonl lives
 	Queue     bool   // report that the harness queues while busy
+	Single    bool   // report that a process runs one session at a time
 	Fail      bool   // reject every push
 	FailAfter int    // reject the push call with this 1-based number and every later one
 
@@ -39,6 +40,8 @@ func (f *Fake) Detect(env []string) (string, bool) {
 }
 
 func (f *Fake) QueuesWhileBusy() bool { return f.Queue }
+
+func (f *Fake) SingleSession() bool { return f.Single }
 
 func (f *Fake) Push(_ store.Agent, msg Outgoing) error {
 	f.mu.Lock()
