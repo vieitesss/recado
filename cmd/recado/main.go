@@ -96,6 +96,7 @@ type app struct {
 	Machines   *machine.Registry
 	startRelay func(string) error      // tests can avoid starting a subprocess
 	execCmd    func(*osexec.Cmd) error // tests can avoid running update's commands
+	executable func() (string, error)  // tests can stub the running binary's path
 	rexList    func() ([]byte, error)  // tests can stub `rex ls --json`
 }
 

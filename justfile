@@ -1,3 +1,3 @@
-# Install the newest version; GOPRIVATE lets go fetch the private repo over git.
+# Install the newest version from source.
 install_latest:
-    GOPRIVATE='github.com/vieitesss/*' go install github.com/vieitesss/recado/cmd/recado@latest
+    go install github.com/vieitesss/recado/cmd/recado@latest
