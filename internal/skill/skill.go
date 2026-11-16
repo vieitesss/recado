@@ -19,7 +19,7 @@ var Guide string
 
 // stubVersion changes whenever Stub's text does, so setup can tell an
 // outdated stub of ours from a skill someone else wrote.
-const stubVersion = "1"
+const stubVersion = "2"
 
 const stubMarker = "recado-stub:"
 
@@ -27,7 +27,7 @@ const stubMarker = "recado-stub:"
 func Stub() string {
 	return `---
 name: recado
-description: Send and receive messages between agents running in different harnesses, terminals and machines with the recado CLI. Use when you need to report to, ask, or answer another agent.
+description: Send and receive messages between agents running in different harnesses and on different machines with the recado CLI. Use when you need to report to, ask, or answer another agent.
 metadata:
   ` + stubMarker + ` "` + stubVersion + `"
 ---

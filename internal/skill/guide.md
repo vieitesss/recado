@@ -1,8 +1,8 @@
 # recado
 
-recado carries messages between agents: a Manager and the Subagents it
-launched, across harnesses and terminals. You send a message; recado stores
-it and delivers it to the recipient as its next turn.
+recado carries messages between agents, across harnesses and machines. You
+send a message; recado stores it and delivers it to the recipient as its next
+turn.
 
 ## Commands
 
@@ -25,7 +25,7 @@ recado reply 7k2q "Reuse the session helper."
   `recado://<machine>/<agent-id>`.
 - `text` may be `-` to read the body from stdin.
 - `--kind` names the message type; the default is `message`. Use the kind
-  your launcher gives you.
+  the agent or script that started you gives you.
 - Every incoming message names its sender and its id, as `(id 7k2q)`. Use
   that id in `recado reply`.
 
@@ -37,7 +37,8 @@ recado reply 7k2q "Reuse the session helper."
 - Answer a recado message only with `recado reply ID "..."`, never with your
   harness's own messaging tool.
 - Every reply names the message it answers, by id.
-- A launcher may hand you exact `recado` lines to run. Run them verbatim.
+- The agent or script that started you may hand you exact `recado` lines to
+  run. Run them verbatim.
 
 ## Exit codes
 
