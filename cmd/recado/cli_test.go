@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -500,6 +501,16 @@ func agentsByID(t *testing.T, a *app) map[string]map[string]json.RawMessage {
 	return byID
 }
 
+// namedAgent writes a registry entry with a readable name and a cwd, the way a
+// session-start hook of a recado that records names does.
+func namedAgent(t *testing.T, a *app, id, name, cwd string, pid int) {
+	t.Helper()
+	writeAgent(t, a, id, fmt.Sprintf(`{"harness":"fake","pid":%d,"name":%q,"cwd":%q}`, pid, name, cwd))
+}
+
+// deadPID is above Linux's and macOS's pid ceilings, so it is never live.
+const deadPID = 1 << 22
+
 func TestHookRecordsRexSessionAndBlock(t *testing.T) {
 	a, _ := newTestApp(t, false)
 	t.Setenv("REX_SESSION", "session:abc")
@@ -831,6 +842,121 @@ func TestSkillLeavesAForeignOpenCodePluginAlone(t *testing.T) {
 	}
 	if got, err := os.ReadFile(pluginPath); err != nil || string(got) != foreign {
 		t.Errorf("the foreign plugin changed: %q, %v", string(got), err)
+	}
+}
+
+func TestAgentsTextShowsNameAndCWD(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	a, _ := newTestApp(t, false)
+	namedAgent(t, a, "sub-4123", "sb", filepath.Join(home, "personal", "recado"), os.Getpid())
+	namedAgent(t, a, "sub-4188", "sb", "/work/elsewhere", os.Getpid())
+	namedAgent(t, a, "old", "", "/work/legacy", deadPID)
+
+	text := mustExec(t, a, "", "agents")
+	for _, want := range []struct{ id, part string }{
+		{"sub-4123", "name=sb-23"},
+		{"sub-4123", "cwd=~/personal/recado"},
+		{"sub-4188", "name=sb-88"},
+		{"sub-4188", "cwd=/work/elsewhere"},
+		{"old", "cwd=/work/legacy"},
+	} {
+		if line := lineWith(text, want.id); !strings.Contains(line, want.part) {
+			t.Errorf("line for %s = %q, want %q", want.id, line, want.part)
+		}
+	}
+	if line := lineWith(text, "old"); strings.Contains(line, "name=") {
+		t.Errorf("a nameless entry got a name: %q", line)
+	}
+
+	byID := agentsByID(t, a)
+	if got := string(byID["sub-4123"]["name"]); got != `"sb-23"` {
+		t.Errorf("sub-4123 name = %s, want the displayed form \"sb-23\"", got)
+	}
+	if got := string(byID["sub-4188"]["name"]); got != `"sb-88"` {
+		t.Errorf("sub-4188 name = %s, want the displayed form \"sb-88\"", got)
+	}
+	if raw, ok := byID["old"]["name"]; ok {
+		t.Errorf("nameless entry has name %s, want the key absent", raw)
+	}
+	if got := string(byID["old"]["cwd"]); got != `"/work/legacy"` {
+		t.Errorf("old cwd = %s, want the full path in JSON", got)
+	}
+}
+
+func TestSessionStartRecordsTheName(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	root := filepath.Join(t.TempDir(), "sb")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(root, "internal")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	startSession(t, a, "sub-1")
+
+	if got := string(agentsByID(t, a)["sub-1"]["name"]); got != `"sb"` {
+		t.Errorf("registry name = %s, want \"sb\" from the git root", got)
+	}
+}
+
+func TestSendToAgentNameUsesItsID(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	namedAgent(t, a, "sub-4123", "sb", "/work/recado", os.Getpid())
+	t.Setenv("RECADO_ADDR", "manager")
+
+	sent := decode[sent](t, mustExec(t, a, "", "send", "sb", "hi", "--json"))
+	if sent.To != "recado://local/sub-4123" {
+		t.Errorf("send to sb = %+v, want the resolved id", sent)
+	}
+	inbox := decode[struct {
+		Messages []message `json:"messages"`
+	}](t, mustExec(t, a, "", "inbox", "--peek", "--as", "sub-4123", "--json"))
+	if len(inbox.Messages) != 1 || inbox.Messages[0].Envelope.To.String() != "recado://local/sub-4123" {
+		t.Errorf("inbox = %+v, want one message addressed to sub-4123", inbox.Messages)
+	}
+}
+
+func TestDeliverToAgentNameUsesItsID(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	namedAgent(t, a, "sub-4123", "sb", "/work/recado", os.Getpid())
+	env, err := envelope.New(addr.Local("manager"), addr.Local("sb"), envelope.KindMessage, "hi", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := env.Line()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := decode[struct {
+		Delivered []sent `json:"delivered"`
+	}](t, mustExec(t, a, string(line), "deliver", "--json"))
+	if len(out.Delivered) != 1 || out.Delivered[0].To != "recado://local/sub-4123" {
+		t.Errorf("deliver --json = %+v, want the resolved id", out.Delivered)
+	}
+}
+
+func TestSendToAmbiguousNameListsMatches(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	namedAgent(t, a, "sub-4123", "sb", "/work/one", os.Getpid())
+	namedAgent(t, a, "sub-4188", "sb", "/work/two", os.Getpid())
+	t.Setenv("RECADO_ADDR", "manager")
+
+	_, err := exec(t, a, "", "send", "sb", "hi")
+	if exitCode(err) != 2 {
+		t.Fatalf("send to an ambiguous name: exit %d, want 2 (%v)", exitCode(err), err)
+	}
+	for _, want := range []string{"sb-23", "sub-4123", "/work/one", "sb-88", "sub-4188", "/work/two"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ambiguity error %q does not mention %q", err, want)
+		}
+	}
+	if inbox := decode[struct {
+		Messages []message `json:"messages"`
+	}](t, mustExec(t, a, "", "inbox", "--peek", "--as", "sub-4123", "--json")); len(inbox.Messages) != 0 {
+		t.Errorf("an ambiguous send stored a message: %+v", inbox.Messages)
 	}
 }
 

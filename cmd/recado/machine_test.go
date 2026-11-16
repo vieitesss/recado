@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vieitesss/recado/internal/machine"
+	"github.com/vieitesss/recado/internal/store"
 )
 
 func TestMachineCommands(t *testing.T) {
@@ -164,6 +165,61 @@ func TestRemoteSendDeliversRewrittenEnvelope(t *testing.T) {
 	}](t, string(data))
 	if answer.From != "recado://local/sub-1" || answer.To != "recado+upstream://"+host+"/manager" || answer.ReplyTo != result.ID || answer.Body != "answer" {
 		t.Fatalf("outbox answer = %+v", answer)
+	}
+}
+
+// registerNamed registers an agent entry with a readable name on a remote app.
+func registerNamed(t *testing.T, a *app, id, name, cwd string) {
+	t.Helper()
+	st, err := a.store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Register(store.Agent{ID: id, Harness: "fake", PID: os.Getpid(), Name: name, CWD: cwd}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoteSendResolvesAgentName(t *testing.T) {
+	remote, _ := newTestApp(t, false)
+	registerNamed(t, remote, "sub-4123", "sb", "/work/recado")
+	t.Setenv("RECADO_TEST_REMOTE", "1")
+	t.Setenv("RECADO_STATE_DIR", remote.Root)
+	t.Setenv("RECADO_ADDR", "manager")
+	local, _ := newTestApp(t, false)
+	local.Machines = remoteTestRegistry(t)
+
+	result := decode[sent](t, mustExec(t, local, "", "send", "rpi/sb", "hello", "--json"))
+	if result.To != "recado://rpi/sb" || result.Short == "" {
+		t.Fatalf("send to rpi/sb = %+v", result)
+	}
+	t.Setenv("RECADO_ADDR", "sub-4123")
+	inbox := decode[struct {
+		Messages []message `json:"messages"`
+	}](t, mustExec(t, remote, "", "inbox", "--peek", "--json"))
+	if len(inbox.Messages) != 1 || inbox.Messages[0].Envelope.To.String() != "recado://local/sub-4123" {
+		t.Fatalf("inbox = %+v, want one message addressed to the resolved id", inbox.Messages)
+	}
+}
+
+func TestRemoteAmbiguousAgentNameIsSurfaced(t *testing.T) {
+	remote, _ := newTestApp(t, false)
+	registerNamed(t, remote, "sub-4123", "sb", "/work/one")
+	registerNamed(t, remote, "sub-4188", "sb", "/work/two")
+	t.Setenv("RECADO_TEST_REMOTE", "1")
+	t.Setenv("RECADO_STATE_DIR", remote.Root)
+	t.Setenv("RECADO_ADDR", "manager")
+	local, _ := newTestApp(t, false)
+	local.Machines = remoteTestRegistry(t)
+
+	_, err := exec(t, local, "", "send", "rpi/sb", "hello")
+	if exitCode(err) != 2 {
+		t.Fatalf("send to an ambiguous remote name: exit %d, want 2 (%v)", exitCode(err), err)
+	}
+	for _, want := range []string{"sub-4123", "sub-4188", "/work/one", "/work/two"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("remote ambiguity error %q does not mention %q", err, want)
+		}
 	}
 }
 

@@ -46,6 +46,13 @@ notify, post and relay.
   harness session id.
 - On the command line a bare `<agent-id>` means `recado://local/<agent-id>`,
   and `<machine>/<agent-id>` is accepted too.
+- An agent also has a **name**, the readable form `recado agents` shows: the
+  base name of the repository or directory the session started in (see
+  Registry). A recipient may be a name instead of an id: an exact registered
+  id wins, else the name must match one live agent, and the envelope's `to` is
+  rewritten to that id. A name matching several live agents fails with exit 2
+  and lists each match as `name id cwd`. Like `cwd`, a name is a hint: a person
+  should confirm when the ambiguity error fires.
 - An address names the agent, not its pane: it survives a resumed session or a
   moved pane. The pane is registry metadata.
 - `recado whoami` prints the caller's address: `RECADO_ADDR`, else what the
@@ -113,7 +120,7 @@ For launchers, scripts and the TUI, not documented in the agent guide:
 | `recado deliver` | reads finished envelopes (JSON lines) on stdin and delivers each; the one entry point for remote sends, the relay and other software |
 | `recado inbox [--peek] [--all] [--meta k=v] [--as ADDR]` | lists messages for an agent; recovery and debugging, never the normal path |
 | `recado status ID` | prints a message's delivery state |
-| `recado agents` | lists registered agents, live or gone |
+| `recado agents` | lists registered agents, live or gone, with the name and cwd each registered |
 | `recado whoami` | prints the caller's address |
 | `recado machine add NAME KIND TARGET`, `rm`, `ls` | manages the machine registry |
 | `recado hook HARNESS EVENT [--endpoint PATH]` | called by harness shims; session start records where the harness accepts pushes |
@@ -129,8 +136,8 @@ Everything lives under `${XDG_STATE_HOME:-~/.local/state}/recado`, mode `0700`
 for directories and `0600` for files:
 
 ```
-agents/<id>.json        registry: harness, endpoint, pid, pane, cwd, started,
-                        state, state_ts
+agents/<id>.json        registry: harness, endpoint, pid, pane, cwd, name,
+                        started, state, state_ts
 mail/<id>/inbox.jsonl   append-only envelopes for that agent
 mail/<id>/receipts.jsonl  append-only state changes {id, state, ts}
 run/pi-<pid>.sock       the Pi extension's socket, while its session lives
@@ -177,11 +184,34 @@ different Stop hook that blocks again can make idle wrong, and a socket push
 then enters the running turn.
 
 `cwd` is the directory the session-start hook ran in, a snapshot taken at
-registration and not the session's live directory. `recado agents --json`
-prints it for scripts and omits the key when an entry has none. It can be
-stale or too broad: Claude Code's goes stale after `cd` or entering a
-worktree, and OpenCode's is the shared server's directory. Treat it as a hint
-and let a person confirm anything chosen from it.
+registration and not the session's live directory. `recado agents` prints it,
+with the user's home written as `~`; `--json` prints the full path and omits
+the key when an entry has none. It can be stale or too broad: Claude Code's
+goes stale after `cd` or entering a worktree, and OpenCode's is the shared
+server's directory. Treat it as a hint and let a person confirm anything
+chosen from it.
+
+A session start also records `name`, the readable name the CLI shows: the base
+name of the git work-tree root containing `cwd` (found by walking up for a
+`.git` entry, no git binary), else the base name of `cwd` itself, lowered and
+sanitised to the agent-id charset; a base that leaves nothing usable records no
+name. The name is a `cwd`-derived hint with the same staleness.
+
+The name an agent displays is computed when listing, never stored: when two or
+more live entries share a base name, each displays as `<base>-<suffix>`, the
+suffix being the shortest tail of its id (at least two characters) that tells
+them apart, the way short message ids work. A single live holder, and any gone
+or retired entry, displays the plain base and never forces a suffix on a live
+one. `recado agents` prints it as `name=` and `--json` as `name`, omitted when
+an entry has none; entries registered before names existed have none until
+their next session start.
+
+`recado send` and `recado ask` accept that displayed name or the base wherever
+they accept a recipient id (see Addresses); so does `recado deliver` on the
+machine receiving a remote send. Resolution runs on the machine that owns the
+registry: for `rpi/sb` the sender routes to `rpi` and the remote `deliver`
+picks the id, so a remote ambiguity error and its exit 2 come back to the
+sender. `reply` names a message, not a recipient, and is untouched.
 
 A session-start hook that saw `REX_SESSION` and `REX_BLOCK` records them as
 `rex_session` and `rex_block` in the entry: the ids only, never a shell-out

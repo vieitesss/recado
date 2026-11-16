@@ -39,6 +39,8 @@ type Agent struct {
 	RexSession string     `json:"rex_session,omitempty"` // Rex session id, resolved to a label when listed
 	RexBlock   string     `json:"rex_block,omitempty"`
 	CWD        string     `json:"cwd,omitempty"`
+	Name       string     `json:"name,omitempty"` // readable name: the repository or directory base
+	Display    string     `json:"-"`              // Name plus a telling id suffix, filled by List
 	Started    time.Time  `json:"started"`
 	State      AgentState `json:"state,omitempty"`
 	StateTS    string     `json:"state_ts,omitempty"`
@@ -161,6 +163,7 @@ func (s *Store) List() ([]Agent, error) {
 		agents = append(agents, a)
 	}
 	sort.Slice(agents, func(i, j int) bool { return agents[i].ID < agents[j].ID })
+	nameAgents(agents)
 	return agents, nil
 }
 

@@ -75,6 +75,7 @@ func classify(err error) error {
 		errors.Is(err, machine.ErrUnknownMachine),
 		errors.Is(err, machine.ErrInvalidMachine),
 		errors.Is(err, store.ErrUnknownAgent),
+		errors.Is(err, store.ErrAmbiguousName),
 		errors.Is(err, store.ErrUnknownID),
 		errors.Is(err, store.ErrAmbiguousID):
 		return usage(err)
@@ -210,6 +211,7 @@ func (a *app) registry(h harness.Harness, id string) store.Agent {
 		RexSession: os.Getenv("REX_SESSION"),
 		RexBlock:   os.Getenv("REX_BLOCK"),
 		CWD:        cwd,
+		Name:       store.DeriveName(cwd),
 		Started:    time.Now().UTC(),
 	}
 }

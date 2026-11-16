@@ -55,16 +55,21 @@ func (s *Service) Deliver(env envelope.Envelope) (Result, error) {
 		return s.deliverRemote(env, from, to)
 	}
 	// Reject an unknown recipient before touching its mailbox; deliver reads
-	// it again under the lock.
-	if _, err := s.Store.Lookup(to.Agent); err != nil {
+	// it again under the lock. A recipient name resolves here, on the machine
+	// that owns the registry, and the envelope carries the id from then on.
+	agent, err := s.Store.ResolveRecipient(to.Agent)
+	if err != nil {
 		return Result{}, err
 	}
-	release, err := s.Store.LockDelivery(to.Agent)
+	if agent.ID != to.Agent {
+		env.To = addr.Local(agent.ID)
+	}
+	release, err := s.Store.LockDelivery(agent.ID)
 	if err != nil {
 		return Result{}, err
 	}
 	defer release()
-	return s.deliverLocked(env, to.Agent)
+	return s.deliverLocked(env, agent.ID)
 }
 
 // deliverLocked runs one delivery with the recipient's delivery lock held.

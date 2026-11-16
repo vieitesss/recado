@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -100,6 +103,11 @@ func (a *app) newAgentsCmd() *cobra.Command {
 		Short: "List registered agents, live or gone",
 		Long: `List every agent in the registry, live or gone.
 
+Each entry shows the readable name it registered with: the repository or
+work-tree base, and, when other live agents share it, a short suffix of the
+id that tells them apart. A name is exact enough to send to when it names one
+live agent. The cwd is the session-start snapshot, with $HOME written as ~.
+
 An entry whose session-start hook saw REX_SESSION records it, and the Rex
 session's label is resolved when listing, because a label can be renamed.
 --rex-session keeps the entries whose Rex session id or label is NAME.`,
@@ -115,6 +123,7 @@ session's label is resolved when listing, because a label can be renamed.
 			}
 			type agent struct {
 				ID      string `json:"id"`
+				Name    string `json:"name,omitempty"`
 				Harness string `json:"harness"`
 				PID     int    `json:"pid"`
 				Live    bool   `json:"live"`
@@ -132,7 +141,7 @@ session's label is resolved when listing, because a label can be renamed.
 					continue
 				}
 				agents = append(agents, agent{
-					ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(),
+					ID: ag.ID, Name: ag.Display, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(),
 					State: string(ag.State), CWD: ag.CWD,
 					RexID: ag.RexSession, RexBlk: ag.RexBlock, RexName: label,
 				})
@@ -154,6 +163,16 @@ session's label is resolved when listing, because a label can be renamed.
 				}
 				if _, err := fmt.Fprintf(w, "%-28s %-5s %-10s pid=%-6d state=%s", ag.ID, life, ag.Harness, ag.PID, state); err != nil {
 					return err
+				}
+				if ag.Name != "" {
+					if _, err := fmt.Fprintf(w, " name=%s", ag.Name); err != nil {
+						return err
+					}
+				}
+				if ag.CWD != "" {
+					if _, err := fmt.Fprintf(w, " cwd=%s", shortenHome(ag.CWD)); err != nil {
+						return err
+					}
 				}
 				if ag.RexName != "" {
 					if _, err := fmt.Fprintf(w, " rex=%s", ag.RexName); err != nil {
@@ -191,4 +210,20 @@ func (a *app) newWhoamiCmd() *cobra.Command {
 			return err
 		}),
 	}
+}
+
+// shortenHome writes the part of path under the user's home as ~/..., the way a
+// person reads a path.
+func shortenHome(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(path, home+string(filepath.Separator)); ok {
+		return "~/" + rest
+	}
+	return path
 }

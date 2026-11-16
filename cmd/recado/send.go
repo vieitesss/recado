@@ -21,7 +21,8 @@ func (a *app) newSendCmd() *cobra.Command {
 		Short: "Send a message to another agent",
 		Long: `Send a message to another agent and return: recado owns delivery from then on.
 
-TEXT may be "-" to read the body from stdin. A bare TO means this machine;
+TEXT may be "-" to read the body from stdin. TO is an agent id, or the name
+"recado agents" shows for it. A bare TO means this machine;
 recado://<machine>/<id> sends through a configured machine.`,
 		Args: cobra.ExactArgs(2),
 		RunE: run(func(cmd *cobra.Command, args []string) error {

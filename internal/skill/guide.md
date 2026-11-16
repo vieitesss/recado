@@ -20,7 +20,8 @@ recado ask manager-4123 "Reuse the session helper or add a new one?"
 recado reply 7k2q "Reuse the session helper."
 ```
 
-- `TO` is an agent id. A bare id is on this machine. Addresses look like
+- `TO` is an agent id, or the name `recado agents` shows for it, such as
+  `sb` or `sb-f4`. A bare id or name is on this machine. Addresses look like
   `recado://<machine>/<agent-id>`.
 - `text` may be `-` to read the body from stdin.
 - `--kind` names the message type; the default is `message`. Use the kind

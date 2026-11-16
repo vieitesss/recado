@@ -87,7 +87,13 @@ func (s *Service) deliverRemote(env envelope.Envelope, from, to addr.Address) (R
 	if err := json.Unmarshal(out, &response); err != nil {
 		return Result{}, fmt.Errorf("machine %q: invalid deliver response: %w", to.Machine, err)
 	}
-	if len(response.Delivered) != 1 || response.Delivered[0].ID != env.ID || response.Delivered[0].To != wire.To.String() || response.Delivered[0].Short == "" {
+	if len(response.Delivered) != 1 || response.Delivered[0].ID != env.ID || response.Delivered[0].Short == "" {
+		return Result{}, fmt.Errorf("machine %q: invalid deliver response", to.Machine)
+	}
+	// A recipient name is resolved on the machine that owns the registry, so
+	// the remote may report another id than the one asked for. It must still
+	// be one on that machine.
+	if delivered, err := addr.Parse(response.Delivered[0].To); err != nil || !delivered.IsLocal() {
 		return Result{}, fmt.Errorf("machine %q: invalid deliver response", to.Machine)
 	}
 	r := response.Delivered[0]
