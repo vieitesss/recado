@@ -170,6 +170,18 @@ stale or too broad: Claude Code's goes stale after `cd` or entering a
 worktree, and OpenCode's is the shared server's directory. Treat it as a hint
 and let a person confirm anything chosen from it.
 
+A session-start hook that saw `REX_SESSION` and `REX_BLOCK` records them as
+`rex_session` and `rex_block` in the entry: the ids only, never a shell-out
+from the hook. A Rex label can be renamed, so `recado agents` resolves it when
+listing: it runs `rex ls --json` once, only when some listed entry has a
+`rex_session` and only if `rex` is on PATH. Any failure (no rex, an error, a
+few seconds of timeout, unreadable JSON) is silent and the label stays
+unknown. The text listing shows the label after its columns (`rex=personal_sb`)
+when it is known; `--json` adds `rex_session`, `rex_block` and `rex_label`,
+each omitted when empty. `recado agents --rex-session NAME` keeps the entries
+whose Rex session id or resolved label is NAME, in text and JSON alike. Rex
+sessions are not an address form: sending still needs an agent id.
+
 ## Delivery
 
 Delivering is one operation, whoever runs it (`send` locally, `deliver` on a

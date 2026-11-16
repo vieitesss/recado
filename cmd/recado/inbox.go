@@ -94,10 +94,16 @@ short id send printed belongs to the recipient's mailbox.`,
 }
 
 func (a *app) newAgentsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "agents",
+	var rexSession string
+	cmd := &cobra.Command{
+		Use:   "agents [--rex-session NAME]",
 		Short: "List registered agents, live or gone",
-		Args:  cobra.NoArgs,
+		Long: `List every agent in the registry, live or gone.
+
+An entry whose session-start hook saw REX_SESSION records it, and the Rex
+session's label is resolved when listing, because a label can be renamed.
+--rex-session keeps the entries whose Rex session id or label is NAME.`,
+		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			st, err := a.store()
 			if err != nil {
@@ -114,10 +120,22 @@ func (a *app) newAgentsCmd() *cobra.Command {
 				Live    bool   `json:"live"`
 				State   string `json:"state"`
 				CWD     string `json:"cwd,omitempty"`
+				RexID   string `json:"rex_session,omitempty"`
+				RexBlk  string `json:"rex_block,omitempty"`
+				RexName string `json:"rex_label,omitempty"`
 			}
-			agents := make([]agent, len(list))
-			for i, ag := range list {
-				agents[i] = agent{ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(), State: string(ag.State), CWD: ag.CWD}
+			labels := a.rexLabels(list)
+			agents := make([]agent, 0, len(list))
+			for _, ag := range list {
+				label := labels[ag.RexSession]
+				if rexSession != "" && ag.RexSession != rexSession && label != rexSession {
+					continue
+				}
+				agents = append(agents, agent{
+					ID: ag.ID, Harness: ag.Harness, PID: ag.PID, Live: ag.Live(),
+					State: string(ag.State), CWD: ag.CWD,
+					RexID: ag.RexSession, RexBlk: ag.RexBlock, RexName: label,
+				})
 			}
 			if jsonFlag(cmd) {
 				return printJSON(cmd.OutOrStdout(), struct {
@@ -134,13 +152,23 @@ func (a *app) newAgentsCmd() *cobra.Command {
 				if state == "" {
 					state = "unknown"
 				}
-				if _, err := fmt.Fprintf(w, "%-28s %-5s %-10s pid=%-6d state=%s\n", ag.ID, life, ag.Harness, ag.PID, state); err != nil {
+				if _, err := fmt.Fprintf(w, "%-28s %-5s %-10s pid=%-6d state=%s", ag.ID, life, ag.Harness, ag.PID, state); err != nil {
+					return err
+				}
+				if ag.RexName != "" {
+					if _, err := fmt.Fprintf(w, " rex=%s", ag.RexName); err != nil {
+						return err
+					}
+				}
+				if _, err := fmt.Fprintln(w); err != nil {
 					return err
 				}
 			}
 			return nil
 		}),
 	}
+	cmd.Flags().StringVar(&rexSession, "rex-session", "", "only agents in this Rex session (id or label)")
+	return cmd
 }
 
 func (a *app) newWhoamiCmd() *cobra.Command {

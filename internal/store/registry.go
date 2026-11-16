@@ -30,16 +30,18 @@ func (s AgentState) Valid() bool { return s == AgentBusy || s == AgentIdle }
 // Agent is one registry entry: agents/<id>.json. The id is the file name, so
 // it is never duplicated inside the file.
 type Agent struct {
-	ID       string     `json:"-"`
-	Harness  string     `json:"harness"`
-	Endpoint string     `json:"endpoint"`
-	Token    string     `json:"token,omitempty"` // a session credential, never printed
-	PID      int        `json:"pid"`
-	Pane     string     `json:"pane,omitempty"`
-	CWD      string     `json:"cwd,omitempty"`
-	Started  time.Time  `json:"started"`
-	State    AgentState `json:"state,omitempty"`
-	StateTS  string     `json:"state_ts,omitempty"`
+	ID         string     `json:"-"`
+	Harness    string     `json:"harness"`
+	Endpoint   string     `json:"endpoint"`
+	Token      string     `json:"token,omitempty"` // a session credential, never printed
+	PID        int        `json:"pid"`
+	Pane       string     `json:"pane,omitempty"`
+	RexSession string     `json:"rex_session,omitempty"` // Rex session id, resolved to a label when listed
+	RexBlock   string     `json:"rex_block,omitempty"`
+	CWD        string     `json:"cwd,omitempty"`
+	Started    time.Time  `json:"started"`
+	State      AgentState `json:"state,omitempty"`
+	StateTS    string     `json:"state_ts,omitempty"`
 }
 
 // Live reports whether the agent's process is still running.

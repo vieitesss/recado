@@ -83,8 +83,41 @@ func TestRegistryFileKeepsDocumentedFields(t *testing.T) {
 			t.Errorf("registry %s has no %q field", data, key)
 		}
 	}
-	if _, ok := fields["state"]; ok {
-		t.Errorf("registry %s has a state field before any turn was reported", data)
+	for _, key := range []string{"state", "rex_session", "rex_block"} {
+		if _, ok := fields[key]; ok {
+			t.Errorf("registry %s has a %s field on a plain entry", data, key)
+		}
+	}
+}
+
+func TestRegistryKeepsRexMetadata(t *testing.T) {
+	s, root := open(t)
+	a := Agent{ID: "sub-1", Harness: "fake", PID: os.Getpid(), RexSession: "session:abc", RexBlock: "block-1"}
+	if err := s.Register(a); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Lookup("sub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RexSession != a.RexSession || got.RexBlock != a.RexBlock {
+		t.Errorf("Lookup = %+v, want Rex session %q block %q", got, a.RexSession, a.RexBlock)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "agents", "sub-1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(fields["rex_session"]); got != `"session:abc"` {
+		t.Errorf("rex_session = %s, want \"session:abc\"", got)
+	}
+	if got := string(fields["rex_block"]); got != `"block-1"` {
+		t.Errorf("rex_block = %s, want \"block-1\"", got)
 	}
 }
 

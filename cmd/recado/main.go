@@ -95,6 +95,7 @@ type app struct {
 	Machines   *machine.Registry
 	startRelay func(string) error      // tests can avoid starting a subprocess
 	execCmd    func(*osexec.Cmd) error // tests can avoid running update's commands
+	rexList    func() ([]byte, error)  // tests can stub `rex ls --json`
 }
 
 func newApp() *app { return &app{Harnesses: harness.Default()} }
@@ -202,12 +203,14 @@ func (a *app) target(as string) (addr.Address, error) {
 func (a *app) registry(h harness.Harness, id string) store.Agent {
 	cwd, _ := os.Getwd()
 	return store.Agent{
-		ID:      id,
-		Harness: h.Name(),
-		PID:     agentPID(),
-		Pane:    os.Getenv("TMUX_PANE"),
-		CWD:     cwd,
-		Started: time.Now().UTC(),
+		ID:         id,
+		Harness:    h.Name(),
+		PID:        agentPID(),
+		Pane:       os.Getenv("TMUX_PANE"),
+		RexSession: os.Getenv("REX_SESSION"),
+		RexBlock:   os.Getenv("REX_BLOCK"),
+		CWD:        cwd,
+		Started:    time.Now().UTC(),
 	}
 }
 

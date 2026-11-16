@@ -474,6 +474,131 @@ func TestAgentsJSONShowsCWD(t *testing.T) {
 	}
 }
 
+// writeAgent puts a raw registry record in the state root, the way an older
+// recado version or a hand edit would.
+func writeAgent(t *testing.T, a *app, id, record string) {
+	t.Helper()
+	dir := filepath.Join(a.Root, "agents")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// agentsByID lists agents as raw JSON keyed by id.
+func agentsByID(t *testing.T, a *app) map[string]map[string]json.RawMessage {
+	t.Helper()
+	out := decode[struct {
+		Agents []map[string]json.RawMessage `json:"agents"`
+	}](t, mustExec(t, a, "", "agents", "--json"))
+	byID := map[string]map[string]json.RawMessage{}
+	for _, ag := range out.Agents {
+		byID[strings.Trim(string(ag["id"]), `"`)] = ag
+	}
+	return byID
+}
+
+func TestHookRecordsRexSessionAndBlock(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	t.Setenv("REX_SESSION", "session:abc")
+	t.Setenv("REX_BLOCK", "block-1")
+	startSession(t, a, "sub-1")
+
+	byID := agentsByID(t, a)
+	if got := string(byID["sub-1"]["rex_session"]); got != `"session:abc"` {
+		t.Errorf("rex_session = %s, want \"session:abc\"", got)
+	}
+	if got := string(byID["sub-1"]["rex_block"]); got != `"block-1"` {
+		t.Errorf("rex_block = %s, want \"block-1\"", got)
+	}
+
+	t.Setenv("REX_SESSION", "")
+	t.Setenv("REX_BLOCK", "")
+	startSession(t, a, "sub-2")
+	for _, key := range []string{"rex_session", "rex_block"} {
+		if raw, ok := agentsByID(t, a)["sub-2"][key]; ok {
+			t.Errorf("sub-2 records %s=%s with Rex unset", key, raw)
+		}
+	}
+}
+
+func TestAgentsShowRexLabel(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	writeAgent(t, a, "sub-1", `{"harness":"fake","pid":1,"rex_session":"session:abc"}`)
+	writeAgent(t, a, "old", `{"harness":"fake","pid":1}`)
+	a.rexList = func() ([]byte, error) {
+		return []byte(`{"sessions":[{"session_id":"session:abc","label":"personal_sb"},{"session_id":"session:def","label":"elsewhere"}]}`), nil
+	}
+
+	text := mustExec(t, a, "", "agents")
+	if !strings.Contains(text, "rex=personal_sb") {
+		t.Errorf("agents = %q, want rex=personal_sb", text)
+	}
+	byID := agentsByID(t, a)
+	if got := string(byID["sub-1"]["rex_label"]); got != `"personal_sb"` {
+		t.Errorf("sub-1 rex_label = %s, want \"personal_sb\"", got)
+	}
+	if got, ok := byID["old"]["rex_label"]; ok {
+		t.Errorf("an entry with no rex_session got rex_label %s", got)
+	}
+}
+
+func TestAgentsRexLabelFailureIsSilent(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	writeAgent(t, a, "sub-1", `{"harness":"fake","pid":1,"rex_session":"session:abc"}`)
+	stubs := map[string]func() ([]byte, error){
+		"rex failed":       func() ([]byte, error) { return nil, errors.New("exec: rex: not found") },
+		"rex printed junk": func() ([]byte, error) { return []byte("not json"), nil },
+	}
+	for name, stub := range stubs {
+		t.Run(name, func(t *testing.T) {
+			a.rexList = stub
+			if out := mustExec(t, a, "", "agents", "--json"); strings.Contains(out, "rex_label") {
+				t.Errorf("agents --json = %s, want no rex_label", out)
+			}
+			if out := mustExec(t, a, "", "agents"); strings.Contains(out, "rex=") {
+				t.Errorf("agents = %q, want no rex", out)
+			}
+		})
+	}
+}
+
+func TestAgentsCallRexOnlyWhenAnEntryHasASession(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	writeAgent(t, a, "old", `{"harness":"fake","pid":1}`)
+	called := false
+	a.rexList = func() ([]byte, error) { called = true; return nil, nil }
+	mustExec(t, a, "", "agents")
+	if called {
+		t.Error("agents ran rex with no rex_session to resolve")
+	}
+}
+
+func TestAgentsFilterByRexSession(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	writeAgent(t, a, "sub-1", `{"harness":"fake","pid":1,"rex_session":"session:abc"}`)
+	writeAgent(t, a, "sub-2", `{"harness":"fake","pid":1,"rex_session":"session:def"}`)
+	a.rexList = func() ([]byte, error) {
+		return []byte(`{"sessions":[{"session_id":"session:abc","label":"personal_sb"},{"session_id":"session:def","label":"other"}]}`), nil
+	}
+
+	for _, query := range []string{"personal_sb", "session:abc"} {
+		out := mustExec(t, a, "", "agents", "--rex-session", query, "--json")
+		if !strings.Contains(out, `"sub-1"`) || strings.Contains(out, `"sub-2"`) {
+			t.Errorf("agents --rex-session %s --json = %s, want only sub-1", query, out)
+		}
+		text := mustExec(t, a, "", "agents", "--rex-session", query)
+		if !strings.Contains(text, "sub-1") || strings.Contains(text, "sub-2") {
+			t.Errorf("agents --rex-session %s = %q, want only sub-1", query, text)
+		}
+	}
+	if out := mustExec(t, a, "", "agents", "--rex-session", "nobody", "--json"); !strings.Contains(out, `"agents": []`) {
+		t.Errorf("agents --rex-session nobody --json = %s, want no agents", out)
+	}
+}
+
 func TestUsageErrorExitCode(t *testing.T) {
 	a, _ := newTestApp(t, false)
 	if _, err := exec(t, a, "", "nonsense"); exitCode(err) != 2 {
