@@ -10,6 +10,11 @@ An addressable participant that sends and receives messages. It keeps its
 address across sessions.
 _Avoid_: session (when you mean the recipient), pane, bot, launcher
 
+**Name**:
+An agent's readable label, taken from the repository or directory its session
+started in. A hint for people, not part of its address.
+_Avoid_: alias, label, nickname
+
 **Session**:
 One run of a harness currently hosting an agent. An agent has at most one live
 session at a time and may have many over its life.
