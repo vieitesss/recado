@@ -104,16 +104,18 @@ func newApp() *app { return &app{Harnesses: harness.Default()} }
 func newRootCmd(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "recado",
-		Short:         "Carry messages between agents across harnesses, multiplexers and machines",
+		Short:         "Carry messages between coding agents across harnesses and machines",
+		Version:       buildVersion(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Long: `Carry messages between agents: a Manager and the Subagents it launched,
-whichever harness (Claude Code, Codex, Pi, ...) and terminal multiplexer each
-runs in.
+		Long: `Carry messages between coding agents, whichever harness (Claude Code, Pi,
+OpenCode, ...) and machine each runs on. A message arrives as the recipient's
+next turn.
 
 State lives in $RECADO_STATE_DIR, else ${XDG_STATE_HOME:-~/.local/state}/recado.
 The caller's address is $RECADO_ADDR, else what the harness adapter detects.`,
 	}
+	root.SetVersionTemplate("recado {{.Version}}\n")
 	root.PersistentFlags().Bool("json", false, "print machine-readable JSON")
 	root.AddCommand(
 		a.newSkillCmd(),
