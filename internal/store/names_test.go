@@ -45,9 +45,6 @@ func TestDeriveNameSanitises(t *testing.T) {
 		{"...", ""},
 	}
 	for _, c := range cases {
-		if c.base == "" {
-			continue // filepath.Join drops it
-		}
 		if got := DeriveName(filepath.Join("/tmp/x", c.base)); got != c.want {
 			t.Errorf("DeriveName(base %q) = %q, want %q", c.base, got, c.want)
 		}

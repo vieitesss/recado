@@ -1,27 +1,29 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/vieitesss/recado/internal/deliver"
 	"github.com/vieitesss/recado/internal/machine"
 )
 
 // agentEntry is one entry of `recado agents --json`.
 type agentEntry struct {
-	ID      string `json:"id"`
-	Address string `json:"address"`
-	Name    string `json:"name"`
-	Harness string `json:"harness"`
-	PID     int    `json:"pid"`
-	Live    bool   `json:"live"`
-	State   string `json:"state"`
-	CWD     string `json:"cwd"`
-	RexID   string `json:"rex_session"`
-	RexBlk  string `json:"rex_block"`
-	RexName string `json:"rex_label"`
+	ID         string `json:"id"`
+	Address    string `json:"address"`
+	Name       string `json:"name"`
+	Harness    string `json:"harness"`
+	PID        int    `json:"pid"`
+	Live       bool   `json:"live"`
+	State      string `json:"state"`
+	CWD        string `json:"cwd"`
+	RexSession string `json:"rex_session"`
+	RexBlock   string `json:"rex_block"`
+	RexLabel   string `json:"rex_label"`
 }
 
 type agentList struct {
@@ -134,7 +136,7 @@ func TestRemoteAgentsFiltersByRexAfterFetch(t *testing.T) {
 		t.Errorf("--rex-session billing = %+v, want only sub-2 on rpi", byLabel.Agents)
 	}
 	byID := listAgents(t, mustExec(t, a, "", "agents", "--machine", "rpi", "--rex-session", "w1", "--json"))
-	if len(byID.Agents) != 1 || byID.Agents[0].RexName != "login" {
+	if len(byID.Agents) != 1 || byID.Agents[0].RexSession != "w1" || byID.Agents[0].RexBlock != "b1" || byID.Agents[0].RexLabel != "login" {
 		t.Errorf("--rex-session w1 = %+v, want the login entry with its label kept", byID.Agents)
 	}
 }
@@ -164,6 +166,29 @@ func TestRemoteAgentsWithoutRecadoFailsImmediately(t *testing.T) {
 	_, err := exec(t, a, "", "agents", "--machine", "rpi")
 	if exitCode(err) != 1 || !strings.Contains(err.Error(), "recado is not installed or not on PATH") {
 		t.Errorf("missing remote recado: exit %d: %v", exitCode(err), err)
+	}
+}
+
+func TestRemoteCommandsReportRejectedInput(t *testing.T) {
+	t.Setenv("RECADO_ADDR", "manager")
+	a, _ := newTestApp(t, false)
+	r := &machine.Registry{Path: filepath.Join(t.TempDir(), "machines.toml"), Kinds: map[string]machine.Kind{
+		"fake": func(string) []string { return []string{"sh", "-c", "echo 'invalid input' >&2; exit 2"} },
+	}}
+	if err := r.Add("rpi", "fake", "rpi"); err != nil {
+		t.Fatal(err)
+	}
+	a.Machines = r
+	for _, args := range [][]string{{"agents", "--machine", "rpi"}, {"send", "rpi/worker", "hi"}} {
+		t.Run(args[0], func(t *testing.T) {
+			_, err := exec(t, a, "", args...)
+			if exitCode(err) != 2 || !errors.Is(err, deliver.ErrRemoteUsage) {
+				t.Fatalf("remote input rejection: exit %d: %v, want ErrRemoteUsage and exit 2", exitCode(err), err)
+			}
+			if want := `remote recado rejected input on machine "rpi": invalid input`; err.Error() != want {
+				t.Errorf("remote input rejection = %q, want %q", err, want)
+			}
+		})
 	}
 }
 

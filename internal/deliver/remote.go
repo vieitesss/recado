@@ -16,7 +16,7 @@ import (
 )
 
 // ErrRemoteUsage means remote recado rejected an address or other input.
-var ErrRemoteUsage = errors.New("remote deliver rejected input")
+var ErrRemoteUsage = errors.New("remote recado rejected input")
 
 // RemoteCommand builds a recado command over the configured machine transport.
 func RemoteCommand(registry *machine.Registry, name string, args ...string) (*exec.Cmd, error) {

@@ -106,17 +106,17 @@ short id send printed belongs to the recipient's mailbox.`,
 // A listing from a newer remote may carry keys this struct does not know;
 // encoding/json ignores them.
 type agent struct {
-	ID      string `json:"id"`
-	Address string `json:"address"`
-	Name    string `json:"name,omitempty"`
-	Harness string `json:"harness"`
-	PID     int    `json:"pid"`
-	Live    bool   `json:"live"`
-	State   string `json:"state"`
-	CWD     string `json:"cwd,omitempty"`
-	RexID   string `json:"rex_session,omitempty"`
-	RexBlk  string `json:"rex_block,omitempty"`
-	RexName string `json:"rex_label,omitempty"`
+	ID         string `json:"id"`
+	Address    string `json:"address"`
+	Name       string `json:"name,omitempty"`
+	Harness    string `json:"harness"`
+	PID        int    `json:"pid"`
+	Live       bool   `json:"live"`
+	State      string `json:"state"`
+	CWD        string `json:"cwd,omitempty"`
+	RexSession string `json:"rex_session,omitempty"`
+	RexBlock   string `json:"rex_block,omitempty"`
+	RexLabel   string `json:"rex_label,omitempty"`
 }
 
 func (a *app) newAgentsCmd() *cobra.Command {
@@ -149,7 +149,7 @@ labels; each entry's address is recado://NAME/<id>, ready for send.`,
 			}
 			agents := make([]agent, 0, len(list))
 			for _, ag := range list {
-				if rexSession != "" && ag.RexID != rexSession && ag.RexName != rexSession {
+				if rexSession != "" && ag.RexSession != rexSession && ag.RexLabel != rexSession {
 					continue
 				}
 				agents = append(agents, ag)
@@ -191,7 +191,7 @@ func (a *app) localAgents() ([]agent, error) {
 		agents = append(agents, agent{
 			ID: ag.ID, Address: addr.Local(ag.ID).String(), Name: ag.Display, Harness: ag.Harness,
 			PID: ag.PID, Live: ag.Live(), State: string(ag.State), CWD: ag.CWD,
-			RexID: ag.RexSession, RexBlk: ag.RexBlock, RexName: labels[ag.RexSession],
+			RexSession: ag.RexSession, RexBlock: ag.RexBlock, RexLabel: labels[ag.RexSession],
 		})
 	}
 	return agents, nil
@@ -261,8 +261,8 @@ func printAgents(w io.Writer, agents []agent, local bool) error {
 				return err
 			}
 		}
-		if ag.RexName != "" {
-			if _, err := fmt.Fprintf(w, " rex=%s", ag.RexName); err != nil {
+		if ag.RexLabel != "" {
+			if _, err := fmt.Fprintf(w, " rex=%s", ag.RexLabel); err != nil {
 				return err
 			}
 		}
