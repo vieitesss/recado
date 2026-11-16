@@ -132,7 +132,8 @@ func (a *app) newAgentsCmd() *cobra.Command {
 Each entry shows the readable name it registered with: the repository or
 work-tree base, and, when other live agents share it, a short suffix of the
 id that tells them apart. A name is exact enough to send to when it names one
-live agent. The cwd is the session-start snapshot, with $HOME written as ~.
+live agent. The cwd is the session-start snapshot. A local text listing
+writes $HOME as ~; a remote listing and --json keep it absolute.
 
 An entry whose session-start hook saw REX_SESSION records it, and the Rex
 session's label is resolved when listing, because a label can be renamed.

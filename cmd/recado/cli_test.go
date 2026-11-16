@@ -974,6 +974,29 @@ func TestInboxAsAgentNameReadsItsMailbox(t *testing.T) {
 	}
 }
 
+// An id nobody registered still names its mailbox: --as reads it as is.
+func TestInboxAsUnregisteredIDReadsItsMailbox(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	env, err := envelope.New(addr.Local("manager"), addr.Local("sub-9"), envelope.KindMessage, "hi", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.store()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Append("sub-9", env); err != nil {
+		t.Fatal(err)
+	}
+
+	inbox := decode[struct {
+		Messages []message `json:"messages"`
+	}](t, mustExec(t, a, "", "inbox", "--peek", "--as", "sub-9", "--json"))
+	if len(inbox.Messages) != 1 || inbox.Messages[0].Envelope.Body != "hi" {
+		t.Errorf("inbox --as sub-9 = %+v, want the message stored for the unregistered id", inbox.Messages)
+	}
+}
+
 func TestInboxAsAmbiguousNameFails(t *testing.T) {
 	a, _ := newTestApp(t, false)
 	namedAgent(t, a, "sub-4123", "sb", "/work/one", os.Getpid())

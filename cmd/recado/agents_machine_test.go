@@ -218,4 +218,10 @@ func TestRemoteAgentsKeepsTheCWDAbsolute(t *testing.T) {
 	if text := mustExec(t, a, "", "agents"); !strings.Contains(text, " cwd=~/src/recado") {
 		t.Errorf("local text = %q, want cwd=~/src/recado", text)
 	}
+	for _, machine := range []string{"local", "rpi"} {
+		got := listAgents(t, mustExec(t, a, "", "agents", "--machine", machine, "--json"))
+		if len(got.Agents) != 1 || got.Agents[0].CWD != cwd {
+			t.Errorf("agents --machine %s --json = %+v, want cwd %s", machine, got.Agents, cwd)
+		}
+	}
 }
