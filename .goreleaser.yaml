@@ -1,0 +1,32 @@
+# Release build, run by .github/workflows/release.yml on v* tags.
+# install.sh downloads recado_<os>_<arch>.tar.gz and checksums.txt by these
+# exact names; change them together.
+version: 2
+
+builds:
+  - main: ./cmd/recado
+    binary: recado
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux] # no Windows: the store relies on flock
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "recado_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  extra_files:
+    - glob: ./install.sh
+
+changelog:
+  use: github
