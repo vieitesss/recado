@@ -2,8 +2,10 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,6 +88,31 @@ func TestRemoteAgentsListsTheRemoteRegistry(t *testing.T) {
 	}
 }
 
+// A remote that is new enough hides its gone agents by default, so --all is
+// forwarded; the default listing sends no new flag and still
+// works against an older remote.
+func TestRemoteAgentsForwardsAllForGoneAgents(t *testing.T) {
+	local, remote := remotePair(t)
+	registerNamed(t, remote, "sub-4123", "sb", "/work/recado")
+	writeAgent(t, remote, "dead-1", fmt.Sprintf(`{"harness":"fake","pid":%d}`, deadPID))
+
+	ids := func(args ...string) []string {
+		t.Helper()
+		got := listAgents(t, mustExec(t, local, "", append([]string{"agents", "--machine", "rpi", "--json"}, args...)...))
+		var ids []string
+		for _, ag := range got.Agents {
+			ids = append(ids, ag.ID)
+		}
+		return ids
+	}
+	if got := ids(); !slices.Equal(got, []string{"sub-4123"}) {
+		t.Errorf("agents --machine rpi = %v, want only the live agent", got)
+	}
+	if got := ids("--all"); !slices.Equal(got, []string{"dead-1", "sub-4123"}) {
+		t.Errorf("agents --machine rpi --all = %v, want both", got)
+	}
+}
+
 // cannedRemote is a machine whose remote recado prints payload exactly, the way
 // an older or newer recado on the other side would.
 func cannedRemote(t *testing.T, payload string) *machine.Registry {
@@ -118,21 +145,27 @@ func TestRemoteAgentsAcceptsAnOlderPayload(t *testing.T) {
 		t.Errorf("entry = %+v, want the remote's fields with an address on rpi", entry)
 	}
 	text := mustExec(t, a, "", "agents", "--machine", "rpi")
-	if !strings.HasPrefix(text, "sub-1                        live  claude     pid=42     state=idle") {
+	if cell(text, "sub-1", "HARNESS") != "claude" || cell(text, "sub-1", "PID") != "42" || cell(text, "sub-1", "STATE") != "idle" {
 		t.Errorf("text = %q, want the local text format", text)
 	}
 }
 
-// Filtering happens on the decoded entries, so the remote needs no flags.
+// Filtering happens on the decoded entries, so the remote needs no flags
+// beyond --all for the gone ones.
 func TestRemoteAgentsFiltersByRexAfterFetch(t *testing.T) {
 	a, _ := newTestApp(t, false)
 	a.Machines = cannedRemote(t, `{"agents":[
 		{"id":"sub-1","address":"recado://local/sub-1","harness":"fake","pid":1,"live":true,"state":"idle","rex_session":"w1","rex_block":"b1","rex_label":"login"},
-		{"id":"sub-2","address":"recado://local/sub-2","harness":"fake","pid":2,"live":false,"state":"","rex_session":"w2","rex_block":"b2","rex_label":"billing"}
+		{"id":"sub-2","address":"recado://local/sub-2","harness":"fake","pid":2,"live":false,"state":"busy","rex_session":"w2","rex_block":"b2","rex_label":"billing"}
 	]}`)
 
-	byLabel := listAgents(t, mustExec(t, a, "", "agents", "--machine", "rpi", "--rex-session", "billing", "--json"))
-	if len(byLabel.Agents) != 1 || byLabel.Agents[0].ID != "sub-2" || byLabel.Agents[0].Address != "recado://rpi/sub-2" {
+	// An older remote lists its gone agents unasked; they stay hidden here,
+	// and listed with --all they carry no state.
+	if hidden := listAgents(t, mustExec(t, a, "", "agents", "--machine", "rpi", "--rex-session", "billing", "--json")); len(hidden.Agents) != 0 {
+		t.Errorf("--rex-session billing without --all = %+v, want the gone sub-2 hidden", hidden.Agents)
+	}
+	byLabel := listAgents(t, mustExec(t, a, "", "agents", "--machine", "rpi", "--rex-session", "billing", "--all", "--json"))
+	if len(byLabel.Agents) != 1 || byLabel.Agents[0].ID != "sub-2" || byLabel.Agents[0].Address != "recado://rpi/sub-2" || byLabel.Agents[0].State != "" {
 		t.Errorf("--rex-session billing = %+v, want only sub-2 on rpi", byLabel.Agents)
 	}
 	byID := listAgents(t, mustExec(t, a, "", "agents", "--machine", "rpi", "--rex-session", "w1", "--json"))
@@ -211,12 +244,12 @@ func TestRemoteAgentsKeepsTheCWDAbsolute(t *testing.T) {
 	a, _ := newTestApp(t, false)
 	a.Machines = cannedRemote(t, `{"agents":[{"id":"sub-1","harness":"fake","pid":1,"live":true,"state":"idle","cwd":"`+cwd+`"}]}`)
 
-	if text := mustExec(t, a, "", "agents", "--machine", "rpi"); !strings.Contains(text, " cwd="+cwd) {
-		t.Errorf("remote text = %q, want cwd=%s", text, cwd)
+	if text := mustExec(t, a, "", "agents", "--machine", "rpi"); cell(text, "sub-1", "CWD") != cwd {
+		t.Errorf("remote text = %q, want cwd %s", text, cwd)
 	}
 	registerNamed(t, a, "sub-2", "sb", cwd)
-	if text := mustExec(t, a, "", "agents"); !strings.Contains(text, " cwd=~/src/recado") {
-		t.Errorf("local text = %q, want cwd=~/src/recado", text)
+	if text := mustExec(t, a, "", "agents"); cell(text, "sub-2", "CWD") != "~/src/recado" {
+		t.Errorf("local text = %q, want cwd ~/src/recado", text)
 	}
 	for _, machine := range []string{"local", "rpi"} {
 		got := listAgents(t, mustExec(t, a, "", "agents", "--machine", machine, "--json"))

@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -112,7 +114,7 @@ type agent struct {
 	Harness    string `json:"harness"`
 	PID        int    `json:"pid"`
 	Live       bool   `json:"live"`
-	State      string `json:"state"`
+	State      string `json:"state,omitempty"` // busy or idle; only a live agent has one
 	CWD        string `json:"cwd,omitempty"`
 	RexSession string `json:"rex_session,omitempty"`
 	RexBlock   string `json:"rex_block,omitempty"`
@@ -123,11 +125,18 @@ func (a *app) newAgentsCmd() *cobra.Command {
 	var (
 		machine    string
 		rexSession string
+		state      string
+		all        bool
 	)
 	cmd := &cobra.Command{
-		Use:   "agents [--machine NAME] [--rex-session NAME]",
-		Short: "List registered agents, live or gone",
-		Long: `List every agent in the registry, live or gone.
+		Use:   "agents [--all] [--state busy|idle] [--machine NAME] [--rex-session NAME]",
+		Short: "List registered agents",
+		Long: `List the agents whose session is live; --all also lists those whose session
+is gone.
+
+A live agent's state is busy or idle, as its harness last reported; - when it
+has not reported yet. A gone agent has no state. --state busy|idle keeps the
+live agents in that state.
 
 Each entry shows the readable name it registered with: the repository or
 work-tree base, and, when other live agents share it, a short suffix of the
@@ -144,12 +153,21 @@ transport send uses. That machine's registry decides liveness, names and Rex
 labels; each entry's address is recado://NAME/<id>, ready for send.`,
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			list, err := a.listAgents(machine)
+			if state != "" && !store.AgentState(state).Valid() {
+				return usagef("unknown --state %q: want busy or idle", state)
+			}
+			list, err := a.listAgents(machine, all)
 			if err != nil {
 				return err
 			}
 			agents := make([]agent, 0, len(list))
 			for _, ag := range list {
+				if !all && !ag.Live {
+					continue
+				}
+				if state != "" && ag.State != state {
+					continue
+				}
 				if rexSession != "" && ag.RexSession != rexSession && ag.RexLabel != rexSession {
 					continue
 				}
@@ -163,18 +181,37 @@ labels; each entry's address is recado://NAME/<id>, ready for send.`,
 			return printAgents(cmd.OutOrStdout(), agents, machine == "" || machine == addr.LocalMachine)
 		}),
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "also list agents whose session is gone")
+	cmd.Flags().StringVar(&state, "state", "", "only live agents in this state: busy or idle")
 	cmd.Flags().StringVar(&machine, "machine", "", "list this machine's agents (default: local)")
 	cmd.Flags().StringVar(&rexSession, "rex-session", "", "only agents in this Rex session (id or label)")
 	return cmd
 }
 
 // listAgents is the registry's view: this machine's, or a remote machine's
-// listing as that machine computed it.
-func (a *app) listAgents(machine string) ([]agent, error) {
+// listing as that machine computed it. withGone asks a remote for its gone
+// agents too; only then is --all forwarded, so the default listing still works
+// against a recado that predates the flag.
+//
+// A registry entry keeps the last state its harness reported after the session
+// ends, and an older remote reports it as well; a gone agent is neither busy
+// nor idle, so its state is dropped here.
+func (a *app) listAgents(machine string, withGone bool) ([]agent, error) {
+	var (
+		list []agent
+		err  error
+	)
 	if machine == "" || machine == addr.LocalMachine {
-		return a.localAgents()
+		list, err = a.localAgents()
+	} else {
+		list, err = a.remoteAgents(machine, withGone)
 	}
-	return a.remoteAgents(machine)
+	for i := range list {
+		if !list[i].Live {
+			list[i].State = ""
+		}
+	}
+	return list, err
 }
 
 func (a *app) localAgents() ([]agent, error) {
@@ -201,12 +238,16 @@ func (a *app) localAgents() ([]agent, error) {
 // remoteAgents runs `recado agents --json` on machine. The remote owns its
 // registry, so it decides liveness, names and Rex labels; only the address is
 // rewritten here, because only this side knows the machine's name.
-func (a *app) remoteAgents(machine string) ([]agent, error) {
+func (a *app) remoteAgents(machine string, withGone bool) ([]agent, error) {
 	registry, err := a.machineRegistry()
 	if err != nil {
 		return nil, err
 	}
-	remote, err := deliver.RemoteCommand(registry, machine, "agents", "--json")
+	args := []string{"agents", "--json"}
+	if withGone {
+		args = append(args, "--all")
+	}
+	remote, err := deliver.RemoteCommand(registry, machine, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -233,45 +274,45 @@ func (a *app) remoteAgents(machine string) ([]agent, error) {
 	return response.Agents, nil
 }
 
-// printAgents writes one line per agent. Only a local listing abbreviates the
-// home directory: a remote cwd is under that machine's home, not this one's.
+// printAgents writes a table with one row per agent, under a header row; no
+// agents print nothing. Only a local listing abbreviates the home directory: a
+// remote cwd is under that machine's home, not this one's.
 func printAgents(w io.Writer, agents []agent, local bool) error {
+	if len(agents) == 0 {
+		return nil
+	}
+	tw := newTable(w, "ID", "NAME", "HARNESS", "PID", "SESSION", "STATE", "REX", "CWD")
 	for _, ag := range agents {
-		life := "gone"
+		cwd := ag.CWD
+		if local && cwd != "" {
+			cwd = shortenHome(cwd)
+		}
+		session := "gone"
 		if ag.Live {
-			life = "live"
+			session = "live"
 		}
-		state := ag.State
-		if state == "" {
-			state = "unknown"
-		}
-		if _, err := fmt.Fprintf(w, "%-28s %-5s %-10s pid=%-6d state=%s", ag.ID, life, ag.Harness, ag.PID, state); err != nil {
-			return err
-		}
-		if ag.Name != "" {
-			if _, err := fmt.Fprintf(w, " name=%s", ag.Name); err != nil {
-				return err
-			}
-		}
-		if ag.CWD != "" {
-			cwd := ag.CWD
-			if local {
-				cwd = shortenHome(cwd)
-			}
-			if _, err := fmt.Fprintf(w, " cwd=%s", cwd); err != nil {
-				return err
-			}
-		}
-		if ag.RexLabel != "" {
-			if _, err := fmt.Fprintf(w, " rex=%s", ag.RexLabel); err != nil {
-				return err
-			}
-		}
-		if _, err := fmt.Fprintln(w); err != nil {
-			return err
+		tw.row(ag.ID, ag.Name, ag.Harness, strconv.Itoa(ag.PID), session, ag.State, ag.RexLabel, cwd)
+	}
+	return tw.Flush()
+}
+
+// table writes aligned columns under a header row. An empty cell prints as -,
+// so every row has the same number of fields.
+type table struct{ *tabwriter.Writer }
+
+func newTable(w io.Writer, header ...string) table {
+	t := table{tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)}
+	t.row(header...)
+	return t
+}
+
+func (t table) row(cells ...string) {
+	for i, c := range cells {
+		if c == "" {
+			cells[i] = "-"
 		}
 	}
-	return nil
+	fmt.Fprintln(t, strings.Join(cells, "\t"))
 }
 
 func (a *app) newWhoamiCmd() *cobra.Command {

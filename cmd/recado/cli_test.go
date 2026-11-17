@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -493,7 +494,7 @@ func agentsByID(t *testing.T, a *app) map[string]map[string]json.RawMessage {
 	t.Helper()
 	out := decode[struct {
 		Agents []map[string]json.RawMessage `json:"agents"`
-	}](t, mustExec(t, a, "", "agents", "--json"))
+	}](t, mustExec(t, a, "", "agents", "--all", "--json"))
 	byID := map[string]map[string]json.RawMessage{}
 	for _, ag := range out.Agents {
 		byID[strings.Trim(string(ag["id"]), `"`)] = ag
@@ -544,8 +545,8 @@ func TestAgentsShowRexLabel(t *testing.T) {
 	}
 
 	text := mustExec(t, a, "", "agents")
-	if !strings.Contains(text, "rex=personal_sb") {
-		t.Errorf("agents = %q, want rex=personal_sb", text)
+	if got := cell(text, "sub-1", "REX"); got != "personal_sb" {
+		t.Errorf("agents = %q, want REX personal_sb for sub-1", text)
 	}
 	byID := agentsByID(t, a)
 	if got := string(byID["sub-1"]["rex_label"]); got != `"personal_sb"` {
@@ -569,7 +570,7 @@ func TestAgentsRexLabelFailureIsSilent(t *testing.T) {
 			if out := mustExec(t, a, "", "agents", "--json"); strings.Contains(out, "rex_label") {
 				t.Errorf("agents --json = %s, want no rex_label", out)
 			}
-			if out := mustExec(t, a, "", "agents"); strings.Contains(out, "rex=") {
+			if out := mustExec(t, a, "", "agents"); cell(out, "sub-1", "REX") != "-" {
 				t.Errorf("agents = %q, want no rex", out)
 			}
 		})
@@ -726,6 +727,20 @@ func TestDrainReleasesMessagesWhenItsOutputFails(t *testing.T) {
 }
 
 // lineWith returns the output line mentioning part.
+// cell is the value under column in the table row whose first field is id, or
+// "" when the table has no such row or column.
+func cell(table, id, column string) string {
+	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	col := slices.Index(strings.Fields(lines[0]), column)
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) > col && col >= 0 && fields[0] == id {
+			return fields[col]
+		}
+	}
+	return ""
+}
+
 func lineWith(out, part string) string {
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, part) {
@@ -853,20 +868,18 @@ func TestAgentsTextShowsNameAndCWD(t *testing.T) {
 	namedAgent(t, a, "sub-4188", "sb", "/work/elsewhere", os.Getpid())
 	namedAgent(t, a, "old", "", "/work/legacy", deadPID)
 
-	text := mustExec(t, a, "", "agents")
-	for _, want := range []struct{ id, part string }{
-		{"sub-4123", "name=sb-23"},
-		{"sub-4123", "cwd=~/personal/recado"},
-		{"sub-4188", "name=sb-88"},
-		{"sub-4188", "cwd=/work/elsewhere"},
-		{"old", "cwd=/work/legacy"},
+	text := mustExec(t, a, "", "agents", "--all")
+	for _, want := range []struct{ id, column, value string }{
+		{"sub-4123", "NAME", "sb-23"},
+		{"sub-4123", "CWD", "~/personal/recado"},
+		{"sub-4188", "NAME", "sb-88"},
+		{"sub-4188", "CWD", "/work/elsewhere"},
+		{"old", "NAME", "-"},
+		{"old", "CWD", "/work/legacy"},
 	} {
-		if line := lineWith(text, want.id); !strings.Contains(line, want.part) {
-			t.Errorf("line for %s = %q, want %q", want.id, line, want.part)
+		if got := cell(text, want.id, want.column); got != want.value {
+			t.Errorf("%s of %s = %q, want %q in %q", want.column, want.id, got, want.value, text)
 		}
-	}
-	if line := lineWith(text, "old"); strings.Contains(line, "name=") {
-		t.Errorf("a nameless entry got a name: %q", line)
 	}
 
 	byID := agentsByID(t, a)
@@ -1014,11 +1027,75 @@ func TestAgentsShowsARetiredSessionGone(t *testing.T) {
 	startSession(t, a, "old")
 	startSession(t, a, "new")
 
-	text := mustExec(t, a, "", "agents")
-	if got := lineWith(text, "old"); !strings.Contains(got, "gone") {
-		t.Errorf("agents line for the superseded id = %q, want gone", got)
+	text := mustExec(t, a, "", "agents", "--all")
+	if got := cell(text, "old", "SESSION"); got != "gone" {
+		t.Errorf("session of the superseded id = %q, want gone in %q", got, text)
 	}
-	if got := lineWith(text, "new"); !strings.Contains(got, "live") {
-		t.Errorf("agents line for the current session = %q, want live", got)
+	if got := cell(text, "new", "SESSION"); got != "live" {
+		t.Errorf("session of the current id = %q, want live in %q", got, text)
+	}
+}
+
+func TestAgentsListLiveOnlyUnlessAll(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	writeAgent(t, a, "idle-1", fmt.Sprintf(`{"harness":"fake","pid":%d,"state":"idle"}`, os.Getpid()))
+	writeAgent(t, a, "busy-1", fmt.Sprintf(`{"harness":"fake","pid":%d,"state":"busy"}`, os.Getpid()))
+	writeAgent(t, a, "quiet-1", fmt.Sprintf(`{"harness":"fake","pid":%d}`, os.Getpid()))
+	writeAgent(t, a, "dead-1", fmt.Sprintf(`{"harness":"fake","pid":%d,"state":"busy"}`, deadPID))
+
+	ids := func(args ...string) []string {
+		t.Helper()
+		got := listAgents(t, mustExec(t, a, "", append([]string{"agents", "--json"}, args...)...))
+		var ids []string
+		for _, ag := range got.Agents {
+			ids = append(ids, ag.ID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+	for _, tc := range []struct {
+		args []string
+		want []string
+	}{
+		{nil, []string{"busy-1", "idle-1", "quiet-1"}},
+		{[]string{"--all"}, []string{"busy-1", "dead-1", "idle-1", "quiet-1"}},
+		{[]string{"--state", "idle"}, []string{"idle-1"}},
+		{[]string{"--state", "idle", "--all"}, []string{"idle-1"}},
+		{[]string{"--state", "busy"}, []string{"busy-1"}},
+		{[]string{"--state", "busy", "--all"}, []string{"busy-1"}},
+	} {
+		if got := ids(tc.args...); !slices.Equal(got, tc.want) {
+			t.Errorf("agents %v = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+
+	text := mustExec(t, a, "", "agents")
+	if !strings.HasPrefix(text, "ID ") || cell(text, "dead-1", "SESSION") != "" || cell(text, "quiet-1", "STATE") != "-" {
+		t.Errorf("agents text = %q, want a header and the live agents", text)
+	}
+
+	// The registry still holds dead-1's last report, busy; a gone agent shows
+	// no state, so it is never gone and busy at once.
+	all := mustExec(t, a, "", "agents", "--all")
+	if cell(all, "dead-1", "SESSION") != "gone" || cell(all, "dead-1", "STATE") != "-" {
+		t.Errorf("agents --all = %q, want dead-1 gone with no state", all)
+	}
+	if raw, ok := agentsByID(t, a)["dead-1"]["state"]; ok {
+		t.Errorf("gone agent has state %s in JSON, want the key absent", raw)
+	}
+
+	for _, bad := range []string{"gone", "live", "unknown"} {
+		_, err := exec(t, a, "", "agents", "--state", bad)
+		if exitCode(err) != 2 || !strings.Contains(err.Error(), "busy or idle") {
+			t.Errorf("agents --state %s: exit %d: %v", bad, exitCode(err), err)
+		}
+	}
+}
+
+func TestAgentsListNothingPrintsNothing(t *testing.T) {
+	a, _ := newTestApp(t, false)
+	writeAgent(t, a, "dead-1", fmt.Sprintf(`{"harness":"fake","pid":%d}`, deadPID))
+	if out := mustExec(t, a, "", "agents"); out != "" {
+		t.Errorf("agents with only gone entries = %q, want nothing", out)
 	}
 }

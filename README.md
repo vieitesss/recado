@@ -52,7 +52,8 @@ the session; set `RECADO_ADDR` to choose one yourself.
 
 ```sh
 recado whoami                       # recado://local/manager-4123
-recado agents                       # every registered agent, live or gone
+recado agents                       # agents whose session is live; --all adds the gone ones
+recado agents --state idle          # only live agents that are idle (or busy)
 ```
 
 `recado agents` also shows each agent's name: the repository or directory its
@@ -98,7 +99,7 @@ agent started in Rex records its Rex session and block, and `recado agents`
 shows the session's current label:
 
 ```sh
-recado agents                       # ... rex=login
+recado agents                       # the REX column shows login
 recado agents --rex-session login   # only the agents in that Rex session
 ```
 

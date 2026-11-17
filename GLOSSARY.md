@@ -20,6 +20,16 @@ One run of a harness currently hosting an agent. An agent has at most one live
 session at a time and may have many over its life.
 _Avoid_: agent
 
+**Live / Gone**:
+Whether an agent's session is still running. A gone agent keeps its address
+and mailbox, and its messages wait until a new session takes it up.
+_Avoid_: dead, offline, active
+
+**State**:
+What a live agent's harness last reported: busy while a turn runs, idle
+between turns. A gone agent has no state.
+_Avoid_: status (for liveness)
+
 **Harness**:
 The coding-agent program a session runs in, such as Claude Code, Pi or
 OpenCode.

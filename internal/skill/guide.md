@@ -23,6 +23,8 @@ recado reply 7k2q "Reuse the session helper."
 - `TO` is an agent id, or the name `recado agents` shows for it, such as
   `sb` or `sb-f4`. A bare id or name is on this machine. Addresses look like
   `recado://<machine>/<agent-id>`.
+- `recado agents` lists the agents whose session is live; `--all` adds the
+  gone ones and `--state idle` keeps the live agents that are idle.
 - `recado agents --machine NAME` lists the agents on a configured machine;
   their addresses work in `TO`.
 - `text` may be `-` to read the body from stdin.
