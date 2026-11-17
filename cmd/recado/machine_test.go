@@ -28,7 +28,7 @@ func TestMachineCommands(t *testing.T) {
 	if len(got.Machines) != 1 || got.Machines[0] != (machine.Machine{Name: "rpi", Kind: "ssh", Target: "pi@rpi"}) {
 		t.Fatalf("machine ls --json = %+v", got)
 	}
-	if out := mustExec(t, a, "", "machine", "ls"); !strings.Contains(out, "rpi") || !strings.Contains(out, "pi@rpi") {
+	if out := mustExec(t, a, "", "machine", "ls"); cell(out, "rpi", "KIND") != "ssh" || cell(out, "rpi", "TARGET") != "pi@rpi" {
 		t.Errorf("machine ls = %q", out)
 	}
 	removed := decode[struct {

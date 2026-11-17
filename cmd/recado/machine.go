@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 	"github.com/vieitesss/recado/internal/machine"
 )
@@ -68,12 +66,14 @@ func (a *app) newMachineCmd() *cobra.Command {
 					Machines []machine.Machine `json:"machines"`
 				}{list})
 			}
-			for _, m := range list {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", m.Name, m.Kind, m.Target); err != nil {
-					return err
-				}
+			if len(list) == 0 {
+				return nil
 			}
-			return nil
+			t := newTable(cmd.OutOrStdout(), "NAME", "KIND", "TARGET")
+			for _, m := range list {
+				t.row(m.Name, m.Kind, m.Target)
+			}
+			return t.Flush()
 		}),
 	})
 	return cmd
