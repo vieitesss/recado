@@ -22,12 +22,21 @@ type Hooks struct {
 	Path    string      // the harness's settings file
 	Prefix  string      // every command recado owns starts with it
 	Entries []HookEntry // what recado installs, in order
+	Section string      // top-level object holding the events; defaults to "hooks"
+	Flat    bool        // events hold flat handler lists instead of matcher/hooks groups
 }
 
 // HookEntry is one hook recado installs: the event it fires on and its command.
 type HookEntry struct {
 	Event   string
 	Command string
+}
+
+func (h Hooks) section() string {
+	if h.Section != "" {
+		return h.Section
+	}
+	return "hooks"
 }
 
 // Inspect reports whether Path holds recado's hook entries, and whether they
@@ -42,7 +51,7 @@ func (h Hooks) Inspect() (State, error) {
 	if err != nil {
 		return 0, err
 	}
-	_, ours, err := stripOurs(events, h.Prefix)
+	_, ours, err := h.stripOurs(events)
 	if err != nil {
 		return 0, err
 	}
@@ -65,15 +74,15 @@ func (h Hooks) Install() error {
 	if err != nil {
 		return err
 	}
-	if events, _, err = stripOurs(events, h.Prefix); err != nil {
+	if events, _, err = h.stripOurs(events); err != nil {
 		return err
 	}
 	for _, entry := range h.Entries {
-		if events, err = addEntry(events, entry); err != nil {
+		if events, err = h.addEntry(events, entry); err != nil {
 			return err
 		}
 	}
-	return h.write(setKey(root, "hooks", events))
+	return h.write(setKey(root, h.section(), events))
 }
 
 // Remove deletes recado's hook entries and nothing else. It reports whether it
@@ -83,14 +92,14 @@ func (h Hooks) Remove() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	ours, removed, err := stripOurs(events, h.Prefix)
+	ours, removed, err := h.stripOurs(events)
 	if err != nil {
 		return false, err
 	}
 	if len(removed) == 0 {
 		return false, nil
 	}
-	return true, h.write(setKey(root, "hooks", ours))
+	return true, h.write(setKey(root, h.section(), ours))
 }
 
 // read decodes the settings file. A missing or empty file is an empty object:
@@ -123,16 +132,17 @@ func (h Hooks) editable() (object, object, error) {
 	return root, events, err
 }
 
-// hooksOf is the "hooks" object of a settings document: event name to the hook
-// groups that fire on it.
+// hooksOf is the hook-events object of a settings document: event name to the
+// hook groups or handlers that fire on it.
 func (h Hooks) hooksOf(root object) (object, error) {
-	raw, ok := root.get("hooks")
+	section := h.section()
+	raw, ok := root.get(section)
 	if !ok {
 		return newObject(), nil
 	}
 	events, err := decodeObject(raw)
 	if err != nil {
-		return object{}, fmt.Errorf("%s: hooks: %w", h.Path, err)
+		return object{}, fmt.Errorf("%s: %s: %w", h.Path, section, err)
 	}
 	return events, nil
 }
@@ -156,6 +166,65 @@ func (h Hooks) write(root object) error {
 	}
 	out.WriteByte('\n')
 	return writeFile(h.Path, out.Bytes())
+}
+
+func (h Hooks) stripOurs(events object) (object, []HookEntry, error) {
+	if h.Flat {
+		return stripOursFlat(events, h.Prefix)
+	}
+	return stripOurs(events, h.Prefix)
+}
+
+func (h Hooks) addEntry(events object, entry HookEntry) (object, error) {
+	if h.Flat {
+		return addEntryFlat(events, entry)
+	}
+	return addEntry(events, entry)
+}
+
+// stripOursFlat removes every flat handler whose command starts with prefix,
+// preserving non-array fields (such as "enabled") and other handlers.
+func stripOursFlat(events object, prefix string) (object, []HookEntry, error) {
+	kept := newObject()
+	var removed []HookEntry
+	for _, event := range events.keys {
+		raw := bytes.TrimSpace(events.raw[event])
+		if len(raw) == 0 || raw[0] != '[' {
+			kept = kept.set(event, events.raw[event])
+			continue
+		}
+		list, err := hookList(raw)
+		if err != nil {
+			return object{}, nil, fmt.Errorf("%s: %w", event, err)
+		}
+		var theirs []json.RawMessage
+		for _, hook := range list {
+			if command := hookCommand(hook); strings.HasPrefix(command, prefix) {
+				removed = append(removed, HookEntry{Event: event, Command: command})
+			} else {
+				theirs = append(theirs, hook)
+			}
+		}
+		if len(theirs) > 0 {
+			kept = kept.set(event, marshal(hookListOf(theirs)))
+		}
+	}
+	return kept, removed, nil
+}
+
+// addEntryFlat appends one flat command handler to its event.
+func addEntryFlat(events object, entry HookEntry) (object, error) {
+	var list []json.RawMessage
+	if raw, ok := events.get(entry.Event); ok {
+		var err error
+		if list, err = hookList(raw); err != nil {
+			return object{}, fmt.Errorf("%s: %w", entry.Event, err)
+		}
+	}
+	handler := marshal(newObject().
+		set("type", marshal("command")).
+		set("command", marshal(entry.Command)))
+	return events.set(entry.Event, marshal(hookListOf(append(list, handler)))), nil
 }
 
 // stripOurs removes every hook whose command starts with prefix, and returns

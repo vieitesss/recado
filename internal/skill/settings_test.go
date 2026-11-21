@@ -260,3 +260,102 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+func agyHooks(path string) Hooks {
+	return Hooks{
+		Path:    path,
+		Prefix:  "recado hook agy",
+		Section: "recado",
+		Flat:    true,
+		Entries: []HookEntry{
+			{Event: "SessionStart", Command: "recado hook agy session-start --store"},
+			{Event: "PreInvocation", Command: "recado hook agy turn-start"},
+			{Event: "Stop", Command: "recado hook agy turn-end --hold"},
+		},
+	}
+}
+
+const usersAgyHooks = `{
+  "lint-checker": {
+    "PostToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/lint.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+
+func TestFlatHooksInstallInspectAndRemove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	if err := os.WriteFile(path, []byte(usersAgyHooks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := readSettings(t, path)
+	h := agyHooks(path)
+
+	if state, err := h.Inspect(); err != nil || state != Missing {
+		t.Fatalf("Inspect before install = %v, %v; want missing", state, err)
+	}
+	if err := h.Install(); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := h.Inspect(); err != nil || state != Current {
+		t.Fatalf("Inspect after install = %v, %v; want current", state, err)
+	}
+
+	got := readSettings(t, path)
+	if !reflect.DeepEqual(got["lint-checker"], original["lint-checker"]) {
+		t.Errorf("user hook changed: got %v, want %v", got["lint-checker"], original["lint-checker"])
+	}
+	recadoSection, ok := got["recado"].(map[string]any)
+	if !ok {
+		t.Fatalf("recado section missing or wrong type: %v", got["recado"])
+	}
+	for _, entry := range h.Entries {
+		list, ok := recadoSection[entry.Event].([]any)
+		if !ok || len(list) != 1 {
+			t.Fatalf("%s = %v, want one flat handler", entry.Event, recadoSection[entry.Event])
+		}
+		handler, _ := list[0].(map[string]any)
+		if handler["type"] != "command" || handler["command"] != entry.Command {
+			t.Errorf("%s handler = %v, want %q", entry.Event, handler, entry.Command)
+		}
+	}
+
+	stale := strings.Replace(readFile(t, path), "turn-end --hold", "turn-end", 1)
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := h.Inspect(); err != nil || state != Outdated {
+		t.Fatalf("Inspect with stale command = %v, %v; want outdated", state, err)
+	}
+
+	removed, err := h.Remove()
+	if err != nil || !removed {
+		t.Fatalf("Remove = %v, %v; want true, nil", removed, err)
+	}
+	if after := readSettings(t, path); !reflect.DeepEqual(after, original) {
+		t.Errorf("after remove = %v, want %v", after, original)
+	}
+}
+
+func TestFlatHooksRemoveDeletesEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	h := agyHooks(path)
+	if err := h.Install(); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := h.Remove(); err != nil || !removed {
+		t.Fatalf("Remove = %v, %v; want true, nil", removed, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("hooks.json still exists after removing its only section: %v", err)
+	}
+}

@@ -122,11 +122,12 @@ func (t Target) installed() File {
 	}
 }
 
-// Targets lists the skill directories under home: Claude Code reads its own,
-// and Codex, OpenCode and Pi share ~/.agents/skills.
+// Targets lists the skill directories under home: Claude Code and Antigravity
+// read their own, and Codex, OpenCode and Pi share ~/.agents/skills.
 func Targets(home string) []Target {
 	return []Target{
 		{Agents: "Claude Code", Dir: filepath.Join(home, ".claude", "skills", "recado")},
+		{Agents: "Antigravity", Dir: filepath.Join(home, ".gemini", "config", "skills", "recado")},
 		{Agents: "Codex, OpenCode, Pi", Dir: filepath.Join(home, ".agents", "skills", "recado")},
 	}
 }
