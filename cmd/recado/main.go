@@ -161,16 +161,27 @@ func (a *app) service() (*deliver.Service, error) {
 	return &deliver.Service{Store: st, Harnesses: a.Harnesses, Machines: r}, nil
 }
 
-// whoami is RECADO_ADDR, else what a harness adapter detects.
+// whoami is RECADO_ADDR, else what a harness adapter detects. RECADO_ADDR was
+// exported by the harness that spawned this process when RECADO_HARNESS names
+// it, so a harness that natively recognises the session outranks the address
+// the process inherited.
 func (a *app) whoami() (addr.Address, error) {
 	self, ok, err := envAddr()
-	if err != nil || ok {
+	if err != nil {
 		return self, err
 	}
-	if _, id, ok := a.Harnesses.Detect(os.Environ()); ok {
-		return addr.Local(id), nil
+	if !ok {
+		if _, id, found := a.Harnesses.Detect(os.Environ()); found {
+			return addr.Local(id), nil
+		}
+		return addr.Address{}, usagef("cannot tell which agent this is: set RECADO_ADDR or run inside a supported harness")
 	}
-	return addr.Address{}, usagef("cannot tell which agent this is: set RECADO_ADDR or run inside a supported harness")
+	if marker := harness.EnvHarness(os.Environ()); marker != "" {
+		if _, id, found := a.Harnesses.DetectOther(os.Environ(), marker); found {
+			return addr.Local(id), nil
+		}
+	}
+	return self, nil
 }
 
 // envAddr is RECADO_ADDR parsed, when it is set: the caller's own address, or

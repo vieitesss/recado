@@ -66,6 +66,14 @@ func lookupEnv(env []string, name string) (string, bool) {
 	return "", false
 }
 
+// EnvHarness is the harness the environment declares, or empty when no shim
+// declared one. A shim exports it to everything the agent spawns, so a harness
+// started as a child inherits the name of the harness that started it.
+func EnvHarness(env []string) string {
+	name, _ := lookupEnv(env, HarnessEnv)
+	return name
+}
+
 // Outgoing is one message the delivery layer hands to a harness: the envelope
 // itself and the text the agent reads, rendered with the recipient's own short
 // id. The delivery layer renders, so an adapter never reads the store.
@@ -132,7 +140,18 @@ func (s Set) Lookup(name string) (Harness, bool) {
 
 // Detect asks each harness in order whether recado runs inside it.
 func (s Set) Detect(env []string) (Harness, string, bool) {
+	return s.DetectOther(env, "")
+}
+
+// DetectOther asks each harness but the one named except whether recado runs
+// inside it. A shim exports its harness name and address to everything the
+// agent spawns, so a command inside a child harness first asks the harnesses
+// that natively recognise the session, and only then trusts the exported name.
+func (s Set) DetectOther(env []string, except string) (Harness, string, bool) {
 	for _, h := range s {
+		if h.Name() == except {
+			continue
+		}
 		if id, ok := h.Detect(env); ok {
 			return h, id, true
 		}

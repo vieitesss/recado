@@ -19,6 +19,9 @@ import (
 
 func newTestApp(t *testing.T, queues bool) (*app, *harness.Fake) {
 	t.Helper()
+	// The suite may run inside a shim, which exports its own harness and
+	// address; no test here means to inherit them.
+	t.Setenv("RECADO_HARNESS", "")
 	fake := &harness.Fake{Dir: t.TempDir(), Queue: queues}
 	return &app{
 		Root:       filepath.Join(t.TempDir(), "state"),

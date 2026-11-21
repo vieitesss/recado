@@ -115,6 +115,7 @@ func TestUnknownHookEventKeepsErrorAndExitCode(t *testing.T) {
 func TestUnknownHookEventReportsOriginalDialectEvent(t *testing.T) {
 	fake := &harness.Fake{Dir: t.TempDir()}
 	a := &app{Root: t.TempDir(), Harnesses: harness.Set{&dialectHarness{fake}}}
+	t.Setenv("RECADO_HARNESS", "")
 	t.Setenv("RECADO_ADDR", "worker")
 	out, err := exec(t, a, "", "hook", "dialect", "invalid-plan")
 	const want = `unknown hook event "invalid-plan": want session-start, turn-start or turn-end`

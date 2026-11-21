@@ -87,13 +87,15 @@ func (a *app) runHook(cmd *cobra.Command, h harness.Harness, req harness.HookReq
 }
 
 // hookAgent is the agent id a hook runs for: RECADO_ADDR, the harness's
-// detection, or the id its hook input supplied.
+// detection, or the id its hook input supplied. A RECADO_ADDR set for another
+// harness is the parent's address, inherited by the harness it spawned, so only
+// this harness's own declared address overrides its session id.
 func (a *app) hookAgent(h harness.Harness, fallback string) (string, error) {
 	self, ok, err := envAddr()
 	if err != nil {
 		return "", err
 	}
-	if ok {
+	if ok && !foreignHarness(h) {
 		if !self.IsLocal() {
 			return "", usagef("%s: machines not supported yet", self)
 		}
@@ -110,6 +112,13 @@ func (a *app) hookAgent(h harness.Harness, fallback string) (string, error) {
 		return "", usagef("harness %s detected a bad agent id %q", h.Name(), id)
 	}
 	return id, nil
+}
+
+// foreignHarness reports whether the environment declares a harness other than
+// h: this process inherited the identity of the harness that spawned it.
+func foreignHarness(h harness.Harness) bool {
+	name := harness.EnvHarness(os.Environ())
+	return name != "" && name != h.Name()
 }
 
 // printDrained writes the drain report: the pushed short ids and the messages

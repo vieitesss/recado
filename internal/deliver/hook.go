@@ -16,6 +16,20 @@ func (e UnknownHookEvent) Error() string {
 	return fmt.Sprintf("unknown hook event %q: want session-start, turn-start or turn-end", string(e))
 }
 
+// ForeignAgent is a hook for one harness naming an agent whose live session
+// another harness owns. Handling it would take that session's registry entry
+// and mailbox over, which is what a harness spawning another one produces when
+// the child inherits the parent's address.
+type ForeignAgent struct {
+	ID      string // the agent the hook names
+	Harness string // the harness the hook runs for
+	Owner   string // the harness whose live session owns the id
+}
+
+func (e ForeignAgent) Error() string {
+	return fmt.Sprintf("agent %s is live in harness %s: a %s hook cannot handle it", e.ID, e.Owner, e.Harness)
+}
+
 // Hook handles a lifecycle plan and writes its response. Agent supplies the
 // session-start registration and the fallback if a turn hook fires first. The
 // standard writer must be non-nil; it is used when the adapter has not supplied
@@ -23,6 +37,9 @@ func (e UnknownHookEvent) Error() string {
 // output failure, release of unhanded claims is best-effort, as for KeepPending.
 func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, json bool, standard func(io.Writer, []store.Message, []store.Message, bool) error) error {
 	id := agent.ID
+	if err := s.refuseForeignAgent(agent); err != nil {
+		return err
+	}
 	var drained drainResult
 	var err error
 	switch plan.Event {
@@ -78,6 +95,27 @@ func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, 
 		return err
 	}
 	return nil
+}
+
+// refuseForeignAgent rejects a hook naming an id another harness's live session
+// owns. The harness that owns the live session is the only one that may handle
+// its events, so a child harness can neither register over it, nor report its
+// turns, nor drain its mailbox.
+func (s *Service) refuseForeignAgent(agent store.Agent) error {
+	if agent.Harness == "" {
+		return nil // a caller that names no harness claims nothing
+	}
+	owner, err := s.Store.Lookup(agent.ID)
+	if errors.Is(err, store.ErrUnknownAgent) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if owner.Harness == agent.Harness || !owner.Live() {
+		return nil
+	}
+	return ForeignAgent{ID: agent.ID, Harness: agent.Harness, Owner: owner.Harness}
 }
 
 // retirePrior marks the ids this agent's process registered before retired,
