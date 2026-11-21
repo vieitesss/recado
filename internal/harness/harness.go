@@ -118,7 +118,7 @@ type SingleSession interface {
 type Set []Harness
 
 // Default is the harnesses built into recado.
-func Default() Set { return Set{&Pi{}, &Claude{}, &OpenCode{}} }
+func Default() Set { return Set{&Pi{}, &Claude{}, &OpenCode{}, &Agy{}} }
 
 // Lookup finds the harness with this name.
 func (s Set) Lookup(name string) (Harness, bool) {

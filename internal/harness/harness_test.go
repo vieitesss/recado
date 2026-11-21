@@ -31,11 +31,13 @@ func TestSingleSessionIsAPerHarnessCapability(t *testing.T) {
 			t.Errorf("%s does not report one session per process, so /clear leaves its old ids live", name)
 		}
 	}
-	h, ok := Default().Lookup("opencode")
-	if !ok {
-		t.Fatal("Default() has no opencode harness")
-	}
-	if single, ok := h.(SingleSession); !ok || single.SingleSession() {
-		t.Error("opencode reports one session per process, though its shared server serves several")
+	for _, name := range []string{"opencode", "agy"} {
+		h, ok := Default().Lookup(name)
+		if !ok {
+			t.Fatalf("Default() has no %s harness", name)
+		}
+		if single, ok := h.(SingleSession); !ok || single.SingleSession() {
+			t.Errorf("%s reports one session per process, though its server can host several conversations", name)
+		}
 	}
 }

@@ -263,3 +263,14 @@ func (s *Service) turnEnd(id string) (drainResult, error) {
 	}
 	return s.drainLocked(id)
 }
+
+// markIdle records the agent idle without draining its mailbox, for an aborted
+// turn (such as user cancellation) that must not be reopened immediately.
+func (s *Service) markIdle(id string) error {
+	release, err := s.Store.LockDelivery(id)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return s.Store.SetState(id, store.AgentIdle)
+}

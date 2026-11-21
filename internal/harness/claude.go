@@ -309,12 +309,18 @@ func claudePID() int {
 
 // claudeAncestor is the pid of the nearest claude process at or above start.
 func claudeAncestor(start int, table map[int]process) int {
+	return processAncestor(start, table, isClaudeProcess)
+}
+
+// processAncestor walks the process table from start up to the nearest process
+// matching match. Zero means none was found.
+func processAncestor(start int, table map[int]process, match func(string) bool) int {
 	for i, pid := 0, start; pid > 1 && i < 32; i++ {
 		p, ok := table[pid]
 		if !ok || p.parent == pid {
 			return 0
 		}
-		if isClaudeProcess(p.command) {
+		if match(p.command) {
 			return pid
 		}
 		pid = p.parent

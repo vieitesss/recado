@@ -44,7 +44,7 @@ func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, 
 			drained.Pending = nil
 		}
 	case "turn-start":
-		if err := s.ensureHookAgent(agent); err != nil {
+		if err := s.ensureHookAgent(agent, plan.Configure); err != nil {
 			return err
 		}
 		// A turn start drains nothing, but the shim still reads its answer.
@@ -52,12 +52,15 @@ func (s *Service) Hook(agent store.Agent, plan harness.HookPlan, out io.Writer, 
 			return err
 		}
 	case "turn-end":
-		if err := s.ensureHookAgent(agent); err != nil {
+		if err := s.ensureHookAgent(agent, plan.Configure); err != nil {
 			return err
 		}
-		if plan.HoldTurn {
+		switch {
+		case plan.SkipDrain:
+			err = s.markIdle(id)
+		case plan.HoldTurn:
 			drained, err = s.hold(id)
-		} else {
+		default:
 			drained, err = s.turnEnd(id)
 		}
 	default:
@@ -94,13 +97,18 @@ func (s *Service) retirePrior(agent store.Agent) error {
 }
 
 // ensureHookAgent registers the agent if this is the first hook it fired.
-func (s *Service) ensureHookAgent(agent store.Agent) error {
+func (s *Service) ensureHookAgent(agent store.Agent, configure func(*store.Agent) error) error {
 	_, err := s.Store.Lookup(agent.ID)
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, store.ErrUnknownAgent) {
 		return err
+	}
+	if configure != nil {
+		if err := configure(&agent); err != nil {
+			return err
+		}
 	}
 	return s.Store.Register(agent)
 }
