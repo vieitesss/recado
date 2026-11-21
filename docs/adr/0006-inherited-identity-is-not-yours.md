@@ -10,9 +10,11 @@ Two rules keep an agent's identity with the harness that hosts its session:
 
 1. A hook named for harness H ignores `RECADO_ADDR` when `RECADO_HARNESS` names
    another harness. It falls through to H's own detection (Antigravity's
-   `ANTIGRAVITY_CONVERSATION_ID`) or to the id H's hook input carries.
-   `RECADO_ADDR` without `RECADO_HARNESS`, or with H's own name, still names the
-   agent: a launcher keeps the power to choose the address.
+   `ANTIGRAVITY_CONVERSATION_ID`) or to the id H's hook input carries. Shims
+   that pick their own agent id (Pi, OpenCode) apply the same rule before
+   adopting `RECADO_ADDR` as a launcher override. `RECADO_ADDR` without
+   `RECADO_HARNESS`, or with H's own name, still names the agent: a launcher
+   keeps the power to choose the address.
 2. `recado whoami` asks the harnesses that natively recognise the session
    first, leaving out the harness the environment names. When one of them
    reports the session, its id is the answer; otherwise `RECADO_ADDR` stands.

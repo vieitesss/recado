@@ -112,7 +112,7 @@ func (s *Service) refuseForeignAgent(agent store.Agent) error {
 	if err != nil {
 		return err
 	}
-	if owner.Harness == agent.Harness || !owner.Live() {
+	if owner.Harness == "" || owner.Harness == agent.Harness || !owner.Live() {
 		return nil
 	}
 	return ForeignAgent{ID: agent.ID, Harness: agent.Harness, Owner: owner.Harness}

@@ -41,8 +41,11 @@ function deriveID(sessionID) {
 	return id || `opencode-${process.pid}`
 }
 
-// launcherID is RECADO_ADDR when a launcher set one, as a bare agent id.
+// launcherID is RECADO_ADDR when a launcher set one, as a bare agent id. An
+// address exported by another harness belongs to the parent that spawned
+// OpenCode, not to any session here.
 function launcherID() {
+	if (process.env.RECADO_HARNESS && process.env.RECADO_HARNESS !== "opencode") return ""
 	const raw = process.env.RECADO_ADDR
 	if (!raw) return ""
 	const id = raw.slice(raw.lastIndexOf("/") + 1)

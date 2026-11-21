@@ -129,7 +129,7 @@ var opencodePlugin string
 
 // openCodeShimVersion changes whenever the plugin's text does, so setup can
 // tell an outdated shim of ours from a file someone else wrote.
-const openCodeShimVersion = "2"
+const openCodeShimVersion = "3"
 
 // Plugin is the file `recado skill setup` installs into OpenCode, version-stamped
 // on its first line.

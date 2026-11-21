@@ -92,7 +92,7 @@ func TestOpenCodeShims(t *testing.T) {
 	}
 	body := string(s.Content)
 	for _, part := range []string{
-		`// recado-shim: "2"`,
+		`// recado-shim: "3"`,
 		`hook", "opencode"`,
 		`delivery: "queue"`,
 		`RECADO_ADDR`,

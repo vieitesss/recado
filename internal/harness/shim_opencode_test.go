@@ -128,6 +128,13 @@ const cases = {
 	async unknown() {
 		result({ reply: await push({ agent: "ses_gone", text: "for a session that is gone" }) });
 	},
+
+	async identity() {
+		await emit("session.created", "ses_a");
+		const env = {};
+		shells["create.before"]({ command: "recado send", cwd: "/tmp", env });
+		result({ addr: env.RECADO_ADDR, harness: env.RECADO_HARNESS });
+	},
 };
 
 await cases[scenario]();
@@ -248,5 +255,34 @@ func TestOpenCodePluginRefusesAFrameForAnUnknownSession(t *testing.T) {
 	reply, _ := got["reply"].(string)
 	if !strings.Contains(reply, `"ok":false`) || !strings.Contains(reply, "ses_gone") {
 		t.Errorf("the answer = %v, want a refusal naming the unknown session", got["reply"])
+	}
+}
+
+// TestOpenCodePluginIgnoresAForeignHarnessAddress: RECADO_ADDR exported by
+// another harness belongs to the parent that spawned OpenCode, not to any
+// session here, while a launcher's own address still names the first session.
+func TestOpenCodePluginIgnoresAForeignHarnessAddress(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		harness string
+		want    string
+	}{
+		{"foreign harness", "pi", "ses_a"},
+		{"launcher without harness", "", "boss"},
+		{"launcher with opencode harness", "opencode", "boss"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{
+				"SCENARIO":    "identity",
+				"RECADO_ADDR": "recado://local/boss",
+			}
+			if c.harness != "" {
+				env["RECADO_HARNESS"] = c.harness
+			}
+			got := runShim(t, "recado-plugin.js", Plugin(), openCodeRunner, env, 60*time.Second)
+			if got["addr"] != c.want || got["harness"] != "opencode" {
+				t.Errorf("identity = %v, want addr=%q harness=\"opencode\"", got, c.want)
+			}
+		})
 	}
 }

@@ -459,3 +459,57 @@ func TestResumedSessionGetsTheMessagesThatWaitedForIt(t *testing.T) {
 		t.Fatalf("pushes = %d, %v; want the waiting message handed to the resumed session", len(pushes), err)
 	}
 }
+
+func TestHookRefuseForeignAgent(t *testing.T) {
+	t.Run("rejects live agent owned by another harness", func(t *testing.T) {
+		f := setup(t, false)
+		if err := f.st.Register(store.Agent{ID: "worker", Harness: "other", PID: os.Getpid()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.st.SetState("worker", store.AgentBusy); err != nil {
+			t.Fatal(err)
+		}
+		err := f.svc.Hook(store.Agent{ID: "worker", Harness: "fake", PID: os.Getpid()}, harness.HookPlan{Event: "session-start"}, io.Discard, false, writePending)
+		var foreign ForeignAgent
+		if !errors.As(err, &foreign) {
+			t.Fatalf("Hook = %v, want ForeignAgent", err)
+		}
+		if foreign.ID != "worker" || foreign.Harness != "fake" || foreign.Owner != "other" {
+			t.Errorf("ForeignAgent = %+v, want {ID:worker Harness:fake Owner:other}", foreign)
+		}
+		got, err := f.st.Lookup("worker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Harness != "other" || got.State != store.AgentBusy {
+			t.Errorf("existing entry = %+v, want untouched busy other agent", got)
+		}
+	})
+
+	t.Run("allows unowned legacy entry", func(t *testing.T) {
+		f := setup(t, false)
+		if err := f.st.Register(store.Agent{ID: "worker", Harness: "", PID: os.Getpid()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.svc.Hook(store.Agent{ID: "worker", Harness: "fake", PID: os.Getpid()}, harness.HookPlan{Event: "session-start"}, io.Discard, false, writePending); err != nil {
+			t.Fatalf("Hook over unowned entry = %v, want nil", err)
+		}
+		got, err := f.st.Lookup("worker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Harness != "fake" {
+			t.Errorf("harness after takeover = %q, want fake", got.Harness)
+		}
+	})
+
+	t.Run("allows hook that names no harness", func(t *testing.T) {
+		f := setup(t, false)
+		if err := f.st.Register(store.Agent{ID: "worker", Harness: "other", PID: os.Getpid()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.svc.Hook(store.Agent{ID: "worker", Harness: "", PID: os.Getpid()}, harness.HookPlan{Event: "turn-start"}, io.Discard, false, writePending); err != nil {
+			t.Fatalf("Hook with empty agent harness = %v, want nil", err)
+		}
+	})
+}

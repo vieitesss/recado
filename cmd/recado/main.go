@@ -166,22 +166,23 @@ func (a *app) service() (*deliver.Service, error) {
 // it, so a harness that natively recognises the session outranks the address
 // the process inherited.
 func (a *app) whoami() (addr.Address, error) {
+	env := os.Environ()
+	if marker := harness.EnvHarness(env); marker != "" {
+		if _, id, found := a.Harnesses.DetectOther(env, marker); found {
+			return addr.Local(id), nil
+		}
+	}
 	self, ok, err := envAddr()
 	if err != nil {
 		return self, err
 	}
-	if !ok {
-		if _, id, found := a.Harnesses.Detect(os.Environ()); found {
-			return addr.Local(id), nil
-		}
-		return addr.Address{}, usagef("cannot tell which agent this is: set RECADO_ADDR or run inside a supported harness")
+	if ok {
+		return self, nil
 	}
-	if marker := harness.EnvHarness(os.Environ()); marker != "" {
-		if _, id, found := a.Harnesses.DetectOther(os.Environ(), marker); found {
-			return addr.Local(id), nil
-		}
+	if _, id, found := a.Harnesses.Detect(env); found {
+		return addr.Local(id), nil
 	}
-	return self, nil
+	return addr.Address{}, usagef("cannot tell which agent this is: set RECADO_ADDR or run inside a supported harness")
 }
 
 // envAddr is RECADO_ADDR parsed, when it is set: the caller's own address, or

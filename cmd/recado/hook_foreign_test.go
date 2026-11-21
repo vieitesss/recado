@@ -19,7 +19,17 @@ const foreignConvID = "1208f8ee-309e-4f0b-bf0c-6a0aa1262060"
 // run one harness as the child of a parent that exported its own identity.
 func newForeignApp(t *testing.T) (*app, string) {
 	t.Helper()
-	for _, name := range []string{"ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_LS_ADDRESS", "ANTIGRAVITY_CSRF_TOKEN", "RECADO_HARNESS", "RECADO_ADDR"} {
+	for _, name := range []string{
+		"ANTIGRAVITY_CONVERSATION_ID",
+		"ANTIGRAVITY_LS_ADDRESS",
+		"ANTIGRAVITY_CSRF_TOKEN",
+		"CLAUDE_CODE_MESSAGING_SOCKET",
+		"CLAUDE_CODE_MESSAGING_TOKEN",
+		"CLAUDE_ENV_FILE",
+		"RECADO_HARNESS",
+		"RECADO_ADDR",
+		"RECADO_PID",
+	} {
 		t.Setenv(name, "")
 	}
 	home := t.TempDir()
@@ -194,11 +204,53 @@ func TestWhoamiPrefersAHarnessThatSeesTheSession(t *testing.T) {
 		t.Errorf("whoami outside agy = %q, want the exported address", got)
 	}
 
-	// A launcher's address needs no harness to confirm it.
-	t.Setenv("RECADO_HARNESS", "")
+	// A launcher's address outranks a detected harness session, whether or not
+	// the launcher also names that harness.
+	t.Setenv("ANTIGRAVITY_CONVERSATION_ID", foreignConvID)
 	t.Setenv("RECADO_ADDR", "subagent-1")
-	if got := strings.TrimSpace(mustExec(t, a, "", "whoami")); got != "recado://local/subagent-1" {
-		t.Errorf("whoami with a launcher address = %q, want subagent-1", got)
+	for _, marker := range []string{"", "agy"} {
+		t.Setenv("RECADO_HARNESS", marker)
+		if got := strings.TrimSpace(mustExec(t, a, "", "whoami")); got != "recado://local/subagent-1" {
+			t.Errorf("whoami with launcher address and RECADO_HARNESS=%q = %q, want subagent-1", marker, got)
+		}
+	}
+}
+
+// TestForeignMalformedAddrIsIgnored: a malformed or remote RECADO_ADDR
+// inherited from a foreign harness is ignored by both hook and whoami rather
+// than failing before the child harness can identify its own session.
+func TestForeignMalformedAddrIsIgnored(t *testing.T) {
+	for _, bad := range []string{"Nope!", "rpi/pi-manager"} {
+		t.Run("addr="+bad, func(t *testing.T) {
+			a, _ := newForeignApp(t)
+			t.Setenv("RECADO_HARNESS", "pi")
+			t.Setenv("RECADO_ADDR", bad)
+			t.Setenv("ANTIGRAVITY_CONVERSATION_ID", foreignConvID)
+
+			if got := strings.TrimSpace(mustExec(t, a, "", "whoami")); got != "recado://local/1208f8ee" {
+				t.Errorf("whoami = %q, want recado://local/1208f8ee", got)
+			}
+
+			start := fmt.Sprintf(`{"conversationId":%q,"cwd":"/tmp/child-repo"}`, foreignConvID)
+			mustExec(t, a, start, "hook", "agy", "session-start", "--store")
+
+			claudeStart := `{"session_id":"01a177db-2b83-77ac-9faa-a97df881c9ee","cwd":"/tmp/child-repo"}`
+			mustExec(t, a, claudeStart, "hook", "claude", "session-start")
+
+			st, err := a.store()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for id, wantHarness := range map[string]string{"1208f8ee": "agy", "01a177db": "claude"} {
+				got, err := st.Lookup(id)
+				if err != nil {
+					t.Fatalf("Lookup(%q) = %v", id, err)
+				}
+				if got.Harness != wantHarness {
+					t.Errorf("%s harness = %q, want %q", id, got.Harness, wantHarness)
+				}
+			}
+		})
 	}
 }
 
@@ -252,7 +304,7 @@ func TestHookRefusesAnotherHarnessLiveAgent(t *testing.T) {
 	}
 
 	// Once the owning session is gone, its id belongs to whoever claims it next.
-	mgr.PID = 1 << 22 // above the supported platforms' PID ceilings
+	mgr.PID = deadPID
 	if err := st.Register(mgr); err != nil {
 		t.Fatal(err)
 	}

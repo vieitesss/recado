@@ -133,7 +133,7 @@ success, `1` failure, `2` usage error or unknown address.
   exact lines to run, e.g.
   `recado send manager-4123 --kind complete --meta report=out.md "summary"`.
   A harness exports its own address to whatever it spawns; the child ignores it
-  and keeps the session it runs in (see `docs/adr/0006`).
+  and keeps the session it runs in (see [docs/adr/0006](docs/adr/0006-inherited-identity-is-not-yours.md)).
 - `--kind` is free text (`message` by default; only `question` changes how the
   message is shown). `--meta k=v` attaches string metadata recado passes
   through untouched.

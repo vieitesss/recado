@@ -284,13 +284,34 @@ func TestPiExtensionKeepsTheLauncherAddressOutOfTheDerivedIDs(t *testing.T) {
 	})
 
 	t.Run("the launcher's address outlives every session", func(t *testing.T) {
+		for _, marker := range []string{"", "pi"} {
+			t.Run("marker="+marker, func(t *testing.T) {
+				env := map[string]string{
+					"SCENARIO":    "identity",
+					"RECADO_ADDR": "recado://local/boss",
+				}
+				if marker != "" {
+					env["RECADO_HARNESS"] = marker
+				}
+				got := runShim(t, "recado.ts", Extension(), piRunner, env, 60*time.Second)
+				for _, name := range []string{"first", "second"} {
+					if got[name] != "boss" {
+						t.Errorf("the %s session address = %v, want the launcher's boss", name, got[name])
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("an address inherited from another harness is ignored", func(t *testing.T) {
 		got := runShim(t, "recado.ts", Extension(), piRunner, map[string]string{
-			"SCENARIO":    "identity",
-			"RECADO_ADDR": "recado://local/boss",
+			"SCENARIO":       "identity",
+			"RECADO_HARNESS": "claude",
+			"RECADO_ADDR":    "recado://local/parent-boss",
 		}, 60*time.Second)
-		for _, name := range []string{"first", "second"} {
-			if got[name] != "boss" {
-				t.Errorf("the %s session address = %v, want the launcher's boss", name, got[name])
+		for name, want := range map[string]string{"first": "first-session", "second": "second-session"} {
+			if got[name] != want {
+				t.Errorf("the %s session address = %v, want %q", name, got[name], want)
 			}
 		}
 	})

@@ -91,15 +91,17 @@ func (a *app) runHook(cmd *cobra.Command, h harness.Harness, req harness.HookReq
 // harness is the parent's address, inherited by the harness it spawned, so only
 // this harness's own declared address overrides its session id.
 func (a *app) hookAgent(h harness.Harness, fallback string) (string, error) {
-	self, ok, err := envAddr()
-	if err != nil {
-		return "", err
-	}
-	if ok && !foreignHarness(h) {
-		if !self.IsLocal() {
-			return "", usagef("%s: machines not supported yet", self)
+	if !foreignHarness(h) {
+		self, ok, err := envAddr()
+		if err != nil {
+			return "", err
 		}
-		return self.Agent, nil
+		if ok {
+			if !self.IsLocal() {
+				return "", usagef("%s: machines not supported yet", self)
+			}
+			return self.Agent, nil
+		}
 	}
 	id, ok := h.Detect(os.Environ())
 	if !ok && fallback != "" {
