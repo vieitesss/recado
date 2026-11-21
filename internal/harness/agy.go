@@ -26,9 +26,11 @@ const agyTimeout = 5 * time.Second
 const agyHookCommandPrefix = "recado hook agy"
 
 // Agy is the Antigravity CLI (agy) adapter. Its lifecycle hooks register the
-// session's language-server address, CSRF token and conversation id, mark
-// turns busy/idle, and hand waiting messages back through Stop's continue
-// decision. While idle, Push wakes the session with `agentapi send-message`.
+// session, mark turns busy/idle, and hand waiting messages back through Stop's
+// continue decision. Because agy never passes its language-server address or
+// CSRF token to hooks, non-hook recado CLI commands capture them passively via
+// SessionEndpoint; once captured, Push wakes an idle session with
+// `agentapi send-message`.
 type Agy struct {
 	// Home is where the user's .gemini lives; empty means the real home.
 	Home string
@@ -58,6 +60,39 @@ func (a *Agy) Detect(env []string) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// SessionEndpoint extracts the Antigravity language-server endpoint and CSRF
+// token from a tool command's environment. Lifecycle hooks never receive these
+// variables, so non-hook CLI commands capture them passively to arm idle push.
+// Both ANTIGRAVITY_LS_ADDRESS and ANTIGRAVITY_CSRF_TOKEN are required: without
+// a token, agentapi always fails with "missing CSRF token".
+func (a *Agy) SessionEndpoint(env []string) (endpoint, token string, ok bool) {
+	lsAddr, ok := lookupEnv(env, "ANTIGRAVITY_LS_ADDRESS")
+	if !ok {
+		return "", "", false
+	}
+	lsAddr = strings.TrimSpace(lsAddr)
+	if lsAddr == "" {
+		return "", "", false
+	}
+	token, ok = lookupEnv(env, "ANTIGRAVITY_CSRF_TOKEN")
+	if !ok {
+		return "", "", false
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", "", false
+	}
+	convID, ok := lookupEnv(env, "ANTIGRAVITY_CONVERSATION_ID")
+	if !ok {
+		return "", "", false
+	}
+	convID = strings.TrimSpace(convID)
+	if !addr.ValidID(shortSessionID(convID)) {
+		return "", "", false
+	}
+	return lsAddr + "/" + convID, token, true
 }
 
 // QueuesWhileBusy reports Antigravity's limit: `agentapi send-message` delivers
@@ -118,7 +153,7 @@ func (a *Agy) PrepareHook(req HookRequest) (HookPlan, error) {
 	plan := HookPlan{
 		Event:       req.Event,
 		KeepPending: req.Event == "session-start" && req.Store,
-		Configure:   func(agent *store.Agent) error { return a.start(agent, in, req.Env) },
+		Configure:   func(agent *store.Agent) error { return a.start(agent, in) },
 	}
 	if id := shortSessionID(in.ConversationID); addr.ValidID(id) {
 		plan.AgentID = id
@@ -169,20 +204,19 @@ func writeAgyStop(w io.Writer, _ []store.Message, pending []store.Message, _ boo
 	return err
 }
 
-// start records the Antigravity session's language-server endpoint and
-// conversation id, CSRF token, workspace CWD (Antigravity runs hooks with cwd
-// set to the hooks.json directory), and the antigravity process PID.
-func (a *Agy) start(agent *store.Agent, in agyHookInput, env []string) error {
-	convID := in.ConversationID
-	if convID == "" {
-		convID, _ = lookupEnv(env, "ANTIGRAVITY_CONVERSATION_ID")
-	}
-	if lsAddr, ok := lookupEnv(env, "ANTIGRAVITY_LS_ADDRESS"); ok && convID != "" {
-		agent.Endpoint = lsAddr + "/" + convID
-	}
-	if token, ok := lookupEnv(env, "ANTIGRAVITY_CSRF_TOKEN"); ok {
-		agent.Token = token
-	}
+// start records the Antigravity session's workspace CWD and the antigravity
+// process PID, and marks the session idle.
+//
+// Antigravity hooks run with PWD set to the hooks.json directory, so in.CWD is
+// the only workspace signal. When --add-dir is used, agy sorts workspacePaths
+// and places the sorted-first path in in.CWD rather than the launch directory.
+//
+// Antigravity never passes ANTIGRAVITY_LS_ADDRESS or ANTIGRAVITY_CSRF_TOKEN to
+// lifecycle hooks; any values present in hook env were inherited from a parent
+// agy session's run_command and point at that parent's language server. Leave
+// Endpoint and Token empty here; non-hook recado commands capture them via
+// SessionEndpoint.
+func (a *Agy) start(agent *store.Agent, in agyHookInput) error {
 	if in.CWD != "" {
 		agent.CWD = in.CWD
 		agent.Name = store.DeriveName(in.CWD)
@@ -200,7 +234,7 @@ func (a *Agy) start(agent *store.Agent, in agyHookInput, env []string) error {
 func (a *Agy) Push(agent store.Agent, msg Outgoing) error {
 	lsAddr, convID, ok := strings.Cut(agent.Endpoint, "/")
 	if !ok || lsAddr == "" || convID == "" {
-		return errors.New("agy: the session published no language server endpoint at its start")
+		return errors.New("agy: no language server endpoint captured yet; waiting for a recado command or the session's next turn")
 	}
 	exe, prefixArgs, err := a.agentAPICommand()
 	if err != nil {

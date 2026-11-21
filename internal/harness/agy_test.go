@@ -92,25 +92,110 @@ func fakeAgyPS(t *testing.T) int {
 	return agyPIDInTable
 }
 
-func TestAgyStartRecordsEndpointTokenCWDAndPID(t *testing.T) {
+func TestAgySessionEndpoint(t *testing.T) {
+	var _ EndpointCapturer = (*Agy)(nil)
+	agy := &Agy{}
+	const conv = "1208f8ee-309e-4f0b-bf0c-6a0aa1262060"
+	cases := []struct {
+		name    string
+		env     []string
+		wantEnd string
+		wantTok string
+		wantOK  bool
+	}{
+		{
+			name: "all present",
+			env: []string{
+				"ANTIGRAVITY_LS_ADDRESS=localhost:64177",
+				"ANTIGRAVITY_CSRF_TOKEN=tok-123",
+				"ANTIGRAVITY_CONVERSATION_ID=" + conv,
+			},
+			wantEnd: "localhost:64177/" + conv,
+			wantTok: "tok-123",
+			wantOK:  true,
+		},
+		{
+			name: "missing ls address",
+			env: []string{
+				"ANTIGRAVITY_CSRF_TOKEN=tok-123",
+				"ANTIGRAVITY_CONVERSATION_ID=" + conv,
+			},
+		},
+		{
+			name: "missing csrf token",
+			env: []string{
+				"ANTIGRAVITY_LS_ADDRESS=localhost:64177",
+				"ANTIGRAVITY_CONVERSATION_ID=" + conv,
+			},
+		},
+		{
+			name: "missing conversation id",
+			env: []string{
+				"ANTIGRAVITY_LS_ADDRESS=localhost:64177",
+				"ANTIGRAVITY_CSRF_TOKEN=tok-123",
+			},
+		},
+		{
+			name: "invalid conversation id",
+			env: []string{
+				"ANTIGRAVITY_LS_ADDRESS=localhost:64177",
+				"ANTIGRAVITY_CSRF_TOKEN=tok-123",
+				"ANTIGRAVITY_CONVERSATION_ID=!!!",
+			},
+		},
+		{
+			name: "whitespace-only address",
+			env: []string{
+				"ANTIGRAVITY_LS_ADDRESS=   ",
+				"ANTIGRAVITY_CSRF_TOKEN=tok-123",
+				"ANTIGRAVITY_CONVERSATION_ID=" + conv,
+			},
+		},
+		{
+			name: "whitespace-only token",
+			env: []string{
+				"ANTIGRAVITY_LS_ADDRESS=localhost:64177",
+				"ANTIGRAVITY_CSRF_TOKEN=   ",
+				"ANTIGRAVITY_CONVERSATION_ID=" + conv,
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			end, tok, ok := agy.SessionEndpoint(c.env)
+			if end != c.wantEnd || tok != c.wantTok || ok != c.wantOK {
+				t.Errorf("SessionEndpoint(%q) = (%q, %q, %v); want (%q, %q, %v)", c.env, end, tok, ok, c.wantEnd, c.wantTok, c.wantOK)
+			}
+		})
+	}
+}
+
+func TestAgyStartRecordsCWDAndPIDAndIgnoresInheritedEndpoint(t *testing.T) {
 	wantPID := fakeAgyPS(t)
 	env := []string{
 		"ANTIGRAVITY_LS_ADDRESS=localhost:64177",
 		"ANTIGRAVITY_CSRF_TOKEN=tok-123",
+		"ANTIGRAVITY_CONVERSATION_ID=1208f8ee-309e-4f0b-bf0c-6a0aa1262060",
 	}
-	in := agyHookInput{
-		ConversationID: "1208f8ee-309e-4f0b-bf0c-6a0aa1262060",
-		CWD:            "/tmp/my-project",
-	}
-	agent := store.Agent{ID: "1208f8ee", Harness: "agy", PID: 1, CWD: "/Users/me/.gemini/config", Name: "config"}
-	if err := (&Agy{}).start(&agent, in, env); err != nil {
+	input := `{"conversationId":"1208f8ee-309e-4f0b-bf0c-6a0aa1262060","cwd":"/tmp/my-project","hookEventName":"SessionStart"}`
+	plan, err := (&Agy{}).PrepareHook(HookRequest{
+		Event: "session-start",
+		Input: strings.NewReader(input),
+		Env:   env,
+		Store: true,
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.Endpoint != "localhost:64177/1208f8ee-309e-4f0b-bf0c-6a0aa1262060" {
-		t.Errorf("endpoint = %q", agent.Endpoint)
+	agent := store.Agent{ID: "1208f8ee", Harness: "agy", PID: 1, CWD: "/Users/me/.gemini/config", Name: "config"}
+	if err := plan.Configure(&agent); err != nil {
+		t.Fatal(err)
 	}
-	if agent.Token != "tok-123" {
-		t.Errorf("token = %q", agent.Token)
+	if agent.Endpoint != "" {
+		t.Errorf("endpoint = %q, want empty (hooks must ignore inherited LS env)", agent.Endpoint)
+	}
+	if agent.Token != "" {
+		t.Errorf("token = %q, want empty (hooks must ignore inherited CSRF token)", agent.Token)
 	}
 	if agent.CWD != "/tmp/my-project" || agent.Name != "my-project" {
 		t.Errorf("cwd=%q name=%q, want /tmp/my-project / my-project", agent.CWD, agent.Name)

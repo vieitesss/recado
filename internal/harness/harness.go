@@ -122,6 +122,14 @@ type SingleSession interface {
 	SingleSession() bool
 }
 
+// EndpointCapturer is the optional capability of a harness whose push endpoint
+// and token are not exposed to lifecycle hooks, only to commands spawned inside
+// a session. Non-hook CLI invocations call SessionEndpoint to passively arm
+// idle pushes for the caller's live session.
+type EndpointCapturer interface {
+	SessionEndpoint(env []string) (endpoint, token string, ok bool)
+}
+
 // Set is the harnesses this binary knows.
 type Set []Harness
 

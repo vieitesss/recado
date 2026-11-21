@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	osexec "os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,6 +116,12 @@ next turn.
 
 State lives in $RECADO_STATE_DIR, else ${XDG_STATE_HOME:-~/.local/state}/recado.
 The caller's address is $RECADO_ADDR, else what the harness adapter detects.`,
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			if skipEndpointCapture(cmd) {
+				return
+			}
+			a.refreshSessionEndpoint(os.Environ())
+		},
 	}
 	root.SetVersionTemplate("recado {{.Version}}\n")
 	root.PersistentFlags().Bool("json", false, "print machine-readable JSON")
@@ -137,16 +144,134 @@ The caller's address is $RECADO_ADDR, else what the harness adapter detects.`,
 	return root
 }
 
+func (a *app) storeRoot() (string, error) {
+	if a.Root != "" {
+		return a.Root, nil
+	}
+	return store.DefaultRoot()
+}
+
 func (a *app) store() (*store.Store, error) {
-	root := a.Root
-	if root == "" {
-		var err error
-		root, err = store.DefaultRoot()
-		if err != nil {
-			return nil, err
-		}
+	root, err := a.storeRoot()
+	if err != nil {
+		return nil, err
 	}
 	return store.Open(root)
+}
+
+// skipEndpointCapture reports commands that must never trigger passive
+// endpoint refresh: lifecycle hooks, help, completion, version, and bare root.
+func skipEndpointCapture(cmd *cobra.Command) bool {
+	if v, err := cmd.Flags().GetBool("version"); err == nil && v {
+		return true
+	}
+	for c := cmd; c != nil && c.HasParent(); c = c.Parent() {
+		switch c.Name() {
+		case "hook", "help", "completion":
+			return true
+		}
+	}
+	return !cmd.HasParent()
+}
+
+// refreshSessionEndpoint passively captures a harness's push endpoint and
+// token when a non-hook CLI command runs inside a session whose hooks do not
+// receive them. All errors are ignored: a read-only environment or missing
+// registry must never break a CLI command.
+func (a *app) refreshSessionEndpoint(env []string) {
+	for _, h := range a.Harnesses {
+		cap, ok := h.(harness.EndpointCapturer)
+		if !ok {
+			continue
+		}
+		endpoint, token, ok := cap.SessionEndpoint(env)
+		if !ok {
+			continue
+		}
+		id, ok := captureAgentID(h, env)
+		if !ok {
+			continue
+		}
+		a.updateSessionEndpoint(h.Name(), id, endpoint, token)
+	}
+}
+
+// captureAgentID picks the local agent id to refresh for h: RECADO_ADDR when
+// it is local and RECADO_HARNESS does not name a different harness, otherwise
+// h.Detect(env).
+func captureAgentID(h harness.Harness, env []string) (string, bool) {
+	marker := harness.EnvHarness(env)
+	if marker == "" || marker == h.Name() {
+		if raw := envLookup(env, "RECADO_ADDR"); raw != "" {
+			if self, err := addr.Parse(raw); err == nil && self.IsLocal() {
+				return self.Agent, true
+			}
+		}
+	}
+	id, ok := h.Detect(env)
+	if !ok || !addr.ValidID(id) {
+		return "", false
+	}
+	return id, true
+}
+
+func (a *app) updateSessionEndpoint(harnessName, id, endpoint, token string) {
+	root, err := a.storeRoot()
+	if err != nil {
+		return
+	}
+	// Never create the state directory or a phantom registry entry.
+	if _, err := os.Stat(filepath.Join(root, "agents", id+".json")); err != nil {
+		return
+	}
+	st, err := store.Open(root)
+	if err != nil {
+		return
+	}
+	ag, err := st.Lookup(id)
+	if err != nil || !canRefreshEndpoint(ag, harnessName, endpoint, token) {
+		return
+	}
+	release, err := st.LockDelivery(id)
+	if err != nil {
+		return
+	}
+	defer release()
+	ag, err = st.Lookup(id)
+	if err != nil || !canRefreshEndpoint(ag, harnessName, endpoint, token) {
+		return
+	}
+	ag.Endpoint = endpoint
+	ag.Token = token
+	_ = st.Register(ag)
+}
+
+// canRefreshEndpoint enforces the passive-refresh safety guards: the entry
+// must be live and owned by harnessName, must not already hold a different
+// conversation's endpoint (protecting a launcher-named parent from a nested
+// child session), and must actually differ from the incoming values.
+func canRefreshEndpoint(ag store.Agent, harnessName, endpoint, token string) bool {
+	if ag.Harness != harnessName || !ag.Live() {
+		return false
+	}
+	if ag.Endpoint != "" {
+		_, oldConv, hasOld := strings.Cut(ag.Endpoint, "/")
+		_, newConv, _ := strings.Cut(endpoint, "/")
+		if hasOld && oldConv != "" && oldConv != newConv {
+			return false
+		}
+	}
+	return ag.Endpoint != endpoint || ag.Token != token
+}
+
+func envLookup(env []string, name string) string {
+	prefix := name + "="
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, prefix); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 func (a *app) service() (*deliver.Service, error) {
