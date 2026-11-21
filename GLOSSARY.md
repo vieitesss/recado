@@ -31,8 +31,8 @@ between turns. A gone agent has no state.
 _Avoid_: status (for liveness)
 
 **Harness**:
-The coding-agent program a session runs in, such as Claude Code, Pi or
-OpenCode.
+The coding-agent program a session runs in, such as Claude Code, Antigravity,
+Pi or OpenCode.
 _Avoid_: host, runtime, client
 
 **Shim**:

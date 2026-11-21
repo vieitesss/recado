@@ -38,10 +38,10 @@ curl -fsSL https://recado.vieitesss.eu/install | RECADO_INSTALL_DIR=~/bin RECADO
 ```
 
 `recado skill setup` installs the skill agents read and the shim each
-receiving harness needs: hooks merged into `~/.claude/settings.json`, an
-extension in `~/.pi/agent/extensions/`, a plugin in
-`~/.config/opencode/plugins/`. `recado skill status` shows what is installed.
-Start a new agent session afterwards so the harness loads them.
+receiving harness needs: hooks merged into `~/.claude/settings.json` and
+`~/.gemini/config/hooks.json`, an extension in `~/.pi/agent/extensions/`, a
+plugin in `~/.config/opencode/plugins/`. `recado skill status` shows what is
+installed. Start a new agent session afterwards so the harness loads them.
 
 Other ways: `go install github.com/vieitesss/recado/cmd/recado@latest`.
 
@@ -86,6 +86,7 @@ tells each one which `recado` line to report back with.
 | Harness | Receives | Sends | Notes |
 | --- | --- | --- | --- |
 | Claude Code ≥ 2.1.224 | yes | yes | woken only while idle; otherwise delivered when its turn ends |
+| Antigravity (`agy`) | yes | yes | woken while idle via `agentapi send-message`; otherwise delivered at `Stop` |
 | Pi ≥ 1.2.0 | yes | yes | queued after the running tool calls |
 | OpenCode ≥ 2.0.0 | yes | yes | queued while busy |
 | Codex | no | yes | set `RECADO_ADDR` to give it an address; replies to it fail, so it can report but not `ask` |
