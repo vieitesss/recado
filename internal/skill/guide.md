@@ -35,6 +35,10 @@ recado reply 7k2q "Reuse the session helper."
 
 ## Rules
 
+- Run `recado whoami` once at the start of your session, before you
+  start any agent that will message you. In Antigravity (`agy`), a `recado`
+  command is what tells recado where to deliver your messages; until you run
+  one, a message sent while you are idle waits unseen.
 - Send and forget. Exit 0 means the message is stored and recado owns its
   delivery: carry on with your work. Do not poll, wait for, or check delivery.
 - `ask` does not block. End your turn; the answer arrives as your next turn.
