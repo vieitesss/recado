@@ -114,7 +114,8 @@ func tellingSuffix(id string, peers []Agent) string {
 // ResolveRecipient maps query to the agent a message goes to. An exact
 // registered id wins, live or gone. Otherwise query names a live agent by the
 // name it displays or its base name: one match resolves to its id, several are
-// ambiguous.
+// ambiguous. If no name matches and query is at least 4 characters long, a
+// unique id prefix or suffix resolves to that agent, preferring live over gone.
 func (s *Store) ResolveRecipient(query string) (Agent, error) {
 	a, err := s.Lookup(query)
 	if err == nil {
@@ -133,15 +134,40 @@ func (s *Store) ResolveRecipient(query string) (Agent, error) {
 			matches = append(matches, a)
 		}
 	}
-	switch len(matches) {
-	case 0:
-		return Agent{}, fmt.Errorf("%w: %s", ErrUnknownAgent, query)
-	case 1:
+	if len(matches) == 1 {
 		return matches[0], nil
 	}
+	if len(matches) > 1 {
+		return Agent{}, ambiguousError(query, matches)
+	}
+	if len(query) >= 4 {
+		var live, gone []Agent
+		for _, a := range agents {
+			if strings.HasPrefix(a.ID, query) || strings.HasSuffix(a.ID, query) {
+				if a.Live() {
+					live = append(live, a)
+				} else {
+					gone = append(gone, a)
+				}
+			}
+		}
+		if len(live) == 1 {
+			return live[0], nil
+		}
+		if len(live) > 1 {
+			return Agent{}, ambiguousError(query, live)
+		}
+		if len(gone) == 1 {
+			return gone[0], nil
+		}
+	}
+	return Agent{}, fmt.Errorf("%w: %s", ErrUnknownAgent, query)
+}
+
+func ambiguousError(query string, matches []Agent) error {
 	lines := make([]string, len(matches))
 	for i, a := range matches {
 		lines[i] = fmt.Sprintf("  %s %s %s", a.Display, a.ID, a.CWD)
 	}
-	return Agent{}, fmt.Errorf("%w %q: %d live agents match:\n%s", ErrAmbiguousName, query, len(matches), strings.Join(lines, "\n"))
+	return fmt.Errorf("%w %q: %d live agents match:\n%s", ErrAmbiguousName, query, len(matches), strings.Join(lines, "\n"))
 }

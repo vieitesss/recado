@@ -175,3 +175,78 @@ func TestResolveRecipientAmbiguousName(t *testing.T) {
 		t.Errorf("ResolveRecipient(sb-23) = %q, want sub-4123", got.ID)
 	}
 }
+
+func TestResolveRecipientByIDPrefix(t *testing.T) {
+	s, _ := open(t)
+	if err := s.Register(agent("01a20e40-6e38-7366-a2f5-a1375264f7d4", "manager", os.Getpid())); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ResolveRecipient("01a20e40")
+	if err != nil {
+		t.Fatalf("ResolveRecipient(01a20e40): %v", err)
+	}
+	if got.ID != "01a20e40-6e38-7366-a2f5-a1375264f7d4" {
+		t.Errorf("ResolveRecipient(01a20e40) = %q, want full id", got.ID)
+	}
+	// Queries shorter than 4 characters do not prefix-match.
+	if _, err := s.ResolveRecipient("01a"); !errors.Is(err, ErrUnknownAgent) {
+		t.Errorf("ResolveRecipient(01a) = %v, want ErrUnknownAgent", err)
+	}
+}
+
+func TestResolveRecipientByIDSuffix(t *testing.T) {
+	s, _ := open(t)
+	if err := s.Register(agent("01a20e40-6e38-7366-a2f5-a1375264f7d4", "manager", os.Getpid())); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ResolveRecipient("5264f7d4")
+	if err != nil {
+		t.Fatalf("ResolveRecipient(5264f7d4): %v", err)
+	}
+	if got.ID != "01a20e40-6e38-7366-a2f5-a1375264f7d4" {
+		t.Errorf("ResolveRecipient(5264f7d4) = %q, want full id", got.ID)
+	}
+}
+
+func TestResolveRecipientAmbiguousIDPrefix(t *testing.T) {
+	s, _ := open(t)
+	if err := s.Register(agent("01a20e40-aaaa", "mgr-a", os.Getpid())); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Register(agent("01a20e40-bbbb", "mgr-b", os.Getpid())); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.ResolveRecipient("01a20e40")
+	if !errors.Is(err, ErrAmbiguousName) {
+		t.Fatalf("ResolveRecipient(01a20e40) = %v, want ErrAmbiguousName", err)
+	}
+	if !strings.Contains(err.Error(), "mgr-a 01a20e40-aaaa /work/01a20e40-aaaa") ||
+		!strings.Contains(err.Error(), "mgr-b 01a20e40-bbbb /work/01a20e40-bbbb") {
+		t.Errorf("ambiguity error = %q, want each match as name id cwd", err)
+	}
+}
+
+func TestResolveRecipientIDPrefixPrefersLiveOverGone(t *testing.T) {
+	s, _ := open(t)
+	if err := s.Register(agent("01a20e40-dead", "old", deadPID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Register(agent("01a20e40-live", "cur", os.Getpid())); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ResolveRecipient("01a20e40")
+	if err != nil {
+		t.Fatalf("ResolveRecipient(01a20e40): %v", err)
+	}
+	if got.ID != "01a20e40-live" {
+		t.Errorf("ResolveRecipient(01a20e40) = %q, want live agent 01a20e40-live", got.ID)
+	}
+	// When only a gone agent matches uniquely, it still resolves.
+	got, err = s.ResolveRecipient("dead")
+	if err != nil {
+		t.Fatalf("ResolveRecipient(dead): %v", err)
+	}
+	if got.ID != "01a20e40-dead" {
+		t.Errorf("ResolveRecipient(dead) = %q, want gone agent 01a20e40-dead", got.ID)
+	}
+}
